@@ -1,0 +1,21 @@
+# Ignore datasets
+shared_datasets/
+data/
+dataset/
+
+# Ignore outputs and logs
+results/
+logs/
+*.log
+
+# Ignore Python caches and environments
+__pycache__/
+*.pyc
+.env
+venv/
+env/
+.venv/
+
+# IDE files
+.vscode/
+.idea/

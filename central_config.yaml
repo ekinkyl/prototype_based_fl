@@ -1,0 +1,78 @@
+# =============================================================================
+# Central Benchmark Configuration
+# All frameworks listed under `frameworks.active` are executed sequentially
+# (or in parallel when parallel_runs > 1) with identical hyperparameters.
+# =============================================================================
+
+experiment:
+  name: "mnist_fpl_baseline"
+  seed: 42
+  output_dir: "./results"          # Central location for logs & aggregated metrics
+  dry_run: false                   # If true, print commands without executing
+
+# Which frameworks to benchmark (must match keys in FRAMEWORK_ADAPTERS)
+frameworks:
+  active:
+    - FPL
+    # - FedAvg
+    # - FedProto
+    # - FedNH
+    # - FedPLVM
+    # - FedTGP
+    # - FedPall
+    # - FedDAP
+    # - FedGMKD
+    # - FedPCL
+
+# ---------------------------------------------------------------------------
+# Shared dataset settings — all repos are forced to read from shared_datasets/
+# ---------------------------------------------------------------------------
+data:
+  root: "./shared_datasets"        # Absolute or workspace-relative path
+  name: "fl_digits"                # FPL dataset identifier (uses MNIST domain)
+  num_classes: 10
+  partition: "domain_skew"         # FPL uses domain-skew by design
+  dirichlet_alpha: 0.5             # Used when partition == dirichlet
+  num_clients: 10
+  train_ratio: 0.8
+
+# ---------------------------------------------------------------------------
+# Global training hyperparameters (mapped per-framework via adapters)
+# ---------------------------------------------------------------------------
+training:
+  global_rounds: 20
+  local_epochs: 10
+  batch_size: 64
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+  optimizer: "sgd"                 # sgd | adam
+
+# ---------------------------------------------------------------------------
+# Model backbone — each adapter maps this to repo-specific model flags
+# ---------------------------------------------------------------------------
+model:
+  backbone: "resnet10"             # resnet10 | lenet | cnn | vit_tiny
+  pretrained: false
+
+# ---------------------------------------------------------------------------
+# Hardware / runtime
+# ---------------------------------------------------------------------------
+runtime:
+  device: "cpu"                    # cuda | cpu  (switch to cuda for A100 Colab)
+  gpu_id: 0
+  num_workers: 4
+  timeout_seconds: 0               # 0 = no timeout
+
+# ---------------------------------------------------------------------------
+# Per-framework overrides (optional)
+# Keys must match FRAMEWORK_ADAPTERS registry names.
+# Values are merged on top of global settings for that framework only.
+# ---------------------------------------------------------------------------
+overrides:
+  FedProto:
+    training:
+      learning_rate: 0.005
+  FedNH:
+    model:
+      backbone: "lenet"
