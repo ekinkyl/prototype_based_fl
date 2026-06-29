@@ -88,11 +88,11 @@ class FPL(FederatedModel):
         return agg_protos_label
 
     def hierarchical_info_loss(self, f_now, label, all_f, mean_f, all_global_protos_keys):
-        f_pos = np.array(all_f)[all_global_protos_keys == label.item()][0].to(self.device)
-        f_neg = torch.cat(list(np.array(all_f)[all_global_protos_keys != label.item()])).to(self.device)
+        f_pos = [all_f[i] for i, k in enumerate(all_global_protos_keys) if k == label.item()][0].to(self.device)
+        f_neg = torch.cat([all_f[i] for i, k in enumerate(all_global_protos_keys) if k != label.item()]).to(self.device)
         xi_info_loss = self.calculate_infonce(f_now, f_pos, f_neg)
 
-        mean_f_pos = np.array(mean_f)[all_global_protos_keys == label.item()][0].to(self.device)
+        mean_f_pos = [mean_f[i] for i, k in enumerate(all_global_protos_keys) if k == label.item()][0].to(self.device)
         mean_f_pos = mean_f_pos.view(1, -1)
         # mean_f_neg = torch.cat(list(np.array(mean_f)[all_global_protos_keys != label.item()]), dim=0).to(self.device)
         # mean_f_neg = mean_f_neg.view(9, -1)
