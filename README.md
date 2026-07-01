@@ -34,8 +34,8 @@ We are currently benchmarking **FPL (Federated Prototypes Learning)** on an init
 - **Hardware:** CPU (Configured for local testing. Switch `device: "cuda"` and `gpu_id: 0` for A100 Colab runs).
 
 ### Model & Federated Learning Hyperparameters
-- **Federated Algorithm:** FPL (Federated Prototypes Learning).
-- **Model Backbone:** ResNet10 (FPL's built-in default architecture for digit datasets).
+- **Frameworks:** FPL, FedNH, FedPLVM, FedTGP, FedPall, FedDAP, FedGMKD, FedPCL, FedProto, FedAvg.
+- **Model Backbone:** ResNet10.
 - **Global Communication Rounds:** 20.
 - **Local Epochs (per client):** 10.
 - **Batch Size:** 64.
