@@ -8,6 +8,7 @@ from datasets.transforms.denormalization import DeNormalize
 from backbone.ResNet import resnet10, resnet12
 from backbone.efficientnet import EfficientNetB0
 from backbone.mobilnet_v2 import MobileNetV2
+from backbone.simple_cnn import simple_cnn
 from torchvision.datasets import MNIST, SVHN, ImageFolder, DatasetFolder, USPS
 
 
@@ -156,7 +157,7 @@ class FedLeaDigits(FederatedDataset):
 
     @staticmethod
     def get_backbone(parti_num, names_list):
-        nets_dict = {'resnet10': resnet10, 'resnet12': resnet12, 'efficient': EfficientNetB0, 'mobilnet': MobileNetV2}
+        nets_dict = {'resnet10': resnet10, 'resnet12': resnet12, 'efficient': EfficientNetB0, 'mobilnet': MobileNetV2, 'simple_cnn': simple_cnn}
         nets_list = []
         if names_list == None:
             for j in range(parti_num):
