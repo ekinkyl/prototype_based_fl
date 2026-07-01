@@ -17,7 +17,7 @@ frameworks:
     - FedNH
     # - FedAvg
     # - FedProto
-    # - FedPLVM
+    - FedPLVM
     # - FedTGP
     # - FedPall
     # - FedDAP

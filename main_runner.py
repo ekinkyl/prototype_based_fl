@@ -235,17 +235,27 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
     "FedPLVM": FrameworkAdapter(
         name="FedPLVM",
         repo_dir="FedPLVM",
-        entry_script="train.py",
+        entry_script="main.py",
         param_map={
-            "data.name": _flag("--dataset"),
-            "data.num_clients": _flag("--clients", transform="int"),
-            "training.global_rounds": _flag("--global_epochs", transform="int"),
-            "training.local_epochs": _flag("--local_epochs", transform="int"),
-            "training.batch_size": _flag("--batch_size", transform="int"),
+            "data.num_clients": _flag("--num_clients", transform="int"),
+            "training.global_rounds": _flag("--rounds", transform="int"),
+            "training.local_epochs": _flag("--train_ep", transform="int"),
+            "training.batch_size": _flag("--local_bs", transform="int"),
             "training.learning_rate": _flag("--lr", transform="float"),
             "experiment.seed": _flag("--seed", transform="int"),
         },
-        data_path=DataPathStrategy(cli_flag="--root", env_var="DATA_ROOT"),
+        static_args=(
+            "--dataset", "digit",
+            "--model", "resnet",
+            "--label_iid", "False",
+            "--test_bs", "64",
+        ),
+        data_path=DataPathStrategy(
+            cli_flag=None,
+            env_var="DATA_ROOT",
+            symlink_into_repo=None,
+            append_dataset_name=False
+        ),
     ),
     "FedTGP": FrameworkAdapter(
         name="FedTGP",
