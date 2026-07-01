@@ -5,7 +5,7 @@
 # =============================================================================
 
 experiment:
-  name: "mnist_fpl_baseline"
+  name: "mnist_prototype_fl_benchmark"
   seed: 42
   output_dir: "./results"          # Central location for logs & aggregated metrics
   dry_run: false                   # If true, print commands without executing
@@ -14,9 +14,9 @@ experiment:
 frameworks:
   active:
     - FPL
+    - FedNH
     # - FedAvg
     # - FedProto
-    # - FedNH
     # - FedPLVM
     # - FedTGP
     # - FedPall
@@ -52,7 +52,7 @@ training:
 # Model backbone — each adapter maps this to repo-specific model flags
 # ---------------------------------------------------------------------------
 model:
-  backbone: "resnet10"             # resnet10 | lenet | cnn | vit_tiny
+  backbone: "resnet10"             # resnet10 (used by both FPL and FedNH)
   pretrained: false
 
 # ---------------------------------------------------------------------------
@@ -70,9 +70,6 @@ runtime:
 # Values are merged on top of global settings for that framework only.
 # ---------------------------------------------------------------------------
 overrides:
-  FedProto:
+  FPL:
     training:
-      learning_rate: 0.005
-  FedNH:
-    model:
-      backbone: "lenet"
+      global_rounds: 40            # FPL benefits from more rounds

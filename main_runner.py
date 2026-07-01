@@ -165,23 +165,42 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
     "FedNH": FrameworkAdapter(
         name="FedNH",
         repo_dir="FedNH",
-        entry_script="run.py",
+        entry_script="main.py",
         param_map={
-            "data.name": _flag("--dataset"),
-            "data.partition": _flag("--split"),
-            "data.num_clients": _flag("--n_clients", transform="int"),
-            "training.global_rounds": _flag("--comm_round", transform="int"),
-            "training.local_epochs": _flag("--local_epoch", transform="int"),
-            "training.batch_size": _flag("--batch_size", transform="int"),
-            "training.learning_rate": _flag("--learning_rate", transform="float"),
-            "model.backbone": _flag("--backbone"),
-            "experiment.seed": _flag("--seed", transform="int"),
+            # --num_clients: number of federated clients
+            "data.num_clients":       _flag("--num_clients", transform="int"),
+            # --num_rounds: global communication rounds
+            "training.global_rounds": _flag("--num_rounds", transform="int"),
+            # --num_epochs: local training epochs per round
+            "training.local_epochs":  _flag("--num_epochs", transform="int"),
+            # --client_lr: client-side learning rate
+            "training.learning_rate": _flag("--client_lr", transform="float"),
+            # --global_seed: random seed
+            "experiment.seed":        _flag("--global_seed", transform="int"),
         },
-        env_map={"data.root": "DATASET_ROOT"},
+        # FedNH-specific static args:
+        #   --yamlfile: the internal base config (model, batch_size, etc.)
+        #   --strategy: selects FedNH algorithm
+        #   --partition + --beta: data heterogeneity via Dirichlet
+        #   --participate_ratio 1.0: all clients train every round
+        #   --no_norm True: disables batch/group norm (paper default)
+        #   --use_wandb False: no wandb logging
+        #   --device: set at runtime via config
+        static_args=(
+            "--yamlfile", "base_config.yaml",
+            "--strategy", "FedNH",
+            "--partition", "noniid-label-distribution",
+            "--beta", "0.5",
+            "--participate_ratio", "1.0",
+            "--no_norm", "True",
+            "--use_wandb", "False",
+            "--device", "cpu",
+        ),
         data_path=DataPathStrategy(
-            cli_flag="--data_root",
-            env_var="DATASET_ROOT",
-            symlink_into_repo="./data",
+            cli_flag=None,                 # FedNH reads data via get_datasets()
+            env_var="FL_BENCHMARK_DATA_ROOT",
+            symlink_into_repo=None,
+            append_dataset_name=False,
         ),
     ),
     "FPL": FrameworkAdapter(
