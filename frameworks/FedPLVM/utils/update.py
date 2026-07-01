@@ -202,7 +202,7 @@ class train_update(object):
                     for i in range(self.args.num_clients):
                         for label in global_cluster_protos.keys():
                             if label not in local_cluster_protos[i].keys():
-                                local_cluster_protos[i][label] = global_protos[label]
+                                local_cluster_protos[i][label] = [global_protos[label]]
                     loss2 += self.criterion_InfoNCE_alpha(features, labels, global_cluster_protos)
                     loss3 += self.criterion_correction(features, labels, global_protos)
                     loss2 += loss3
