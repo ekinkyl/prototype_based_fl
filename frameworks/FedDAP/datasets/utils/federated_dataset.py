@@ -112,7 +112,7 @@ def partition_label_skew_loaders(train_dataset: datasets, test_dataset: datasets
                              batch_size=setting.args.local_batch_size, shuffle=False, num_workers=4)
     setting.test_loader = test_loader
 
-    return setting.train_loaders, setting.test_loader, net_cls_counts
+    return setting.train_loaders, [setting.test_loader], net_cls_counts
 
 
 def partition_digits_domain_skew_loaders(train_datasets: list, test_datasets: list,
