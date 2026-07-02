@@ -601,7 +601,7 @@ def adcol(args, train_loader_list, test_loader_list):
             accuracy_list[datasets_name[idx]].append(copy.deepcopy(acc_temp[idx] / (args.num_users // len(datasets_name))))
         # update discriminatro model
         features_dataset = data_utils.FeatureDataset(features_labels)
-        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True)  
+        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         loss_func = nn.CrossEntropyLoss()
         discriminator.train()
         for _ in range(args.adcol_epoch):
@@ -830,7 +830,7 @@ def ours(args, train_loader_list, test_loader_list):
             best_acc = sum(acc_temp) / len(acc_temp)
         # update global classifier layer
         features_label_dataset = data_utils.FeatureDataset(features_labels)
-        features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True)  
+        features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         loss_func = nn.CrossEntropyLoss()
         global_classifier.train()
         for _ in range(args.adcol_epoch):
@@ -843,7 +843,7 @@ def ours(args, train_loader_list, test_loader_list):
                 classifier_optimizer.step()
         # update discriminator model
         features_dataset = data_utils.FeatureDataset(features_idx)
-        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True)  
+        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         discriminator.train()
         for _ in range(args.adcol_epoch):
             for x, y in features_loader:
@@ -961,7 +961,7 @@ def ablation1(args, train_loader_list, test_loader_list):
         
         # update global classifier layer
         features_label_dataset = data_utils.FeatureDataset(features_labels)
-        features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True)  
+        features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         loss_func = nn.CrossEntropyLoss()
         global_classifier.train()
         for _ in range(args.adcol_epoch):
@@ -975,7 +975,7 @@ def ablation1(args, train_loader_list, test_loader_list):
         # update discriminator model
         if args.loss_component in [3, 4]:
             features_dataset = data_utils.FeatureDataset(features_idx)
-            features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True)  
+            features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
             discriminator.train()
             for _ in range(args.adcol_epoch):
                 for x, y in features_loader:
@@ -1073,7 +1073,7 @@ def ablation2(args, train_loader_list, test_loader_list):
         loss_func = nn.CrossEntropyLoss()
         if args.cls_component == 1:
             features_label_dataset = data_utils.FeatureDataset(features_labels)
-            features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True)  
+            features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
             global_classifier.train()
             for _ in range(args.adcol_epoch):
                 for x, y in features_label_loader:
@@ -1085,7 +1085,7 @@ def ablation2(args, train_loader_list, test_loader_list):
                     classifier_optimizer.step()
         # update discriminator model
         features_dataset = data_utils.FeatureDataset(features_idx)
-        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True)  
+        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         discriminator.train()
         for _ in range(args.adcol_epoch):
             for x, y in features_loader:
@@ -1210,7 +1210,7 @@ def ablation3(args, train_loader_list, test_loader_list):
             best_acc = np.average(acc_temp) 
         # update global classifier layer
         features_label_dataset = data_utils.FeatureDataset(features_labels)
-        features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True)  
+        features_label_loader = torch.utils.data.DataLoader(features_label_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         loss_func = nn.CrossEntropyLoss()
         global_classifier.train()
         for _ in range(args.adcol_epoch):
@@ -1223,7 +1223,7 @@ def ablation3(args, train_loader_list, test_loader_list):
                 classifier_optimizer.step()
         # update discriminator model
         features_dataset = data_utils.FeatureDataset(features_idx)
-        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True)  
+        features_loader = torch.utils.data.DataLoader(features_dataset, batch_size=args.batch, shuffle=True, drop_last=True)  
         discriminator.train()
         for _ in range(args.adcol_epoch):
             for x, y in features_loader:

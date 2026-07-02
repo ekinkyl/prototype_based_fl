@@ -171,7 +171,7 @@ def prepare_data_mnist_pfl(args):
             idx, data_path="../data/MNIST", channels=1, percent=args.percent, 
             train=True, transform=transform_mnist, noise=False
         )
-        mnist_train_loader = torch.utils.data.DataLoader(mnist_trainset, batch_size=args.batch, shuffle=True)
+        mnist_train_loader = torch.utils.data.DataLoader(mnist_trainset, batch_size=args.batch, shuffle=True, drop_last=True)
         train_loaders.append(mnist_train_loader)
         
     mnist_testset = data_utils.DigitsDataset_mul_clients(

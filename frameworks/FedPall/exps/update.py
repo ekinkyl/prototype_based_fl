@@ -907,7 +907,7 @@ class LocalUpdate(object):
         for i in range(self.args.wk_iters):
             crt_loader = torch.utils.data.DataLoader(dataset=crt_dataset,
                                     batch_size=self.args.batch,
-                                    shuffle=True)
+                                    shuffle=True, drop_last=True)
             for feat, cls in crt_loader:
                 feat, cls = feat.to(self.device), cls.to(self.device)
                 outputs = model.classifier(feat)
