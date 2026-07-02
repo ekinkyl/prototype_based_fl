@@ -53,10 +53,11 @@ class classifier_model(nn.Module):
     # discriminator for adversarial training in ADCOL
     def __init__(self, args, num_classes):
         super(classifier_model, self).__init__()     
+        in_features = 512 if args.dataset in ["fl_digits", "mnist"] else 2048
         # 分类层
         self.classifier = nn.Sequential(
             OrderedDict([
-                ('fc4', nn.Linear(2048, 512)),
+                ('fc4', nn.Linear(in_features, 512)),
                 ('bn4', nn.BatchNorm1d(512)),
                 ('relu4', nn.ReLU(inplace=True)),
                 ('fc5', nn.Linear(512, 512)),
