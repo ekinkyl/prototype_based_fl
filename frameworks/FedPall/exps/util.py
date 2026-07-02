@@ -168,14 +168,14 @@ def prepare_data_mnist_pfl(args):
     train_loaders, test_loaders = [], []
     for idx in range(args.num_users):
         mnist_trainset = data_utils.DigitsDataset_mul_clients(
-            idx, data_path="../data/Digits/MNIST", channels=1, percent=args.percent, 
+            idx, data_path="../data/MNIST", channels=1, percent=args.percent, 
             train=True, transform=transform_mnist, noise=False
         )
         mnist_train_loader = torch.utils.data.DataLoader(mnist_trainset, batch_size=args.batch, shuffle=True)
         train_loaders.append(mnist_train_loader)
         
     mnist_testset = data_utils.DigitsDataset_mul_clients(
-        0, data_path="../data/Digits/MNIST", channels=1, percent=args.percent, 
+        0, data_path="../data/MNIST", channels=1, percent=args.percent, 
         train=False, transform=transform_mnist, noise=False
     )
     mnist_test_loader = torch.utils.data.DataLoader(
