@@ -150,7 +150,7 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
             "training.batch_size": _flag("-lbs", transform="int"),
             "training.learning_rate": _flag("-lr", transform="float"),
         },
-        static_args=("-data", "mnist", "-m", "Homogeneous", "-algo", "FedTGP", "-go", "test"),
+        static_args=("-data", "mnist", "-m", "HtFE3_MNIST", "-algo", "FedTGP", "-go", "test"),
         data_path=DataPathStrategy(
             env_var="DATA_ROOT",
         ),
@@ -538,6 +538,20 @@ def build_command(
     dataset_path = resolve_dataset_path(config, adapter)
     if require_repo:
         ensure_data_symlink(repo_path, adapter, dataset_path)
+        
+        # --- FedTGP Special Hook ---
+        # Run original data generation if dataset/mnist/train is missing
+        if adapter.name == "FedTGP":
+            gen_script = repo_path / "dataset" / "generate_mnist.py"
+            data_dir = repo_path / "dataset" / "mnist"
+            if gen_script.exists() and not (data_dir / "train").exists():
+                logging.info("[%s] Running data generation script...", adapter.name)
+                subprocess.run(
+                    [sys.executable, str(gen_script)], 
+                    cwd=str(repo_path / "dataset"), 
+                    check=True
+                )
+
 
     cli_args = build_cli_args(config, adapter)
     env = build_env(config, adapter)
