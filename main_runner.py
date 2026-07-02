@@ -139,6 +139,22 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
             symlink_into_repo="./data",
         ),
     ),
+    "FedTGP": FrameworkAdapter(
+        name="FedTGP",
+        repo_dir="FedTGP",
+        entry_script="system/main.py",
+        param_map={
+            "data.num_clients": _flag("-nc", transform="int"),
+            "training.global_rounds": _flag("-gr", transform="int"),
+            "training.local_epochs": _flag("-ls", transform="int"),
+            "training.batch_size": _flag("-lbs", transform="int"),
+            "training.learning_rate": _flag("-lr", transform="float"),
+        },
+        static_args=("-data", "mnist", "-m", "Homogeneous", "-algo", "FedTGP", "-go", "test"),
+        data_path=DataPathStrategy(
+            env_var="DATA_ROOT",
+        ),
+    ),
     "FedProto": FrameworkAdapter(
         name="FedProto",
         repo_dir="FedProto",
@@ -257,20 +273,7 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
             append_dataset_name=False
         ),
     ),
-    "FedTGP": FrameworkAdapter(
-        name="FedTGP",
-        repo_dir="FedTGP",
-        entry_script="main.py",
-        param_map={
-            "data.name": _flag("--dataset"),
-            "data.num_clients": _flag("--num_users", transform="int"),
-            "training.global_rounds": _flag("--rounds", transform="int"),
-            "training.local_epochs": _flag("--local_ep", transform="int"),
-            "training.learning_rate": _flag("--lr", transform="float"),
-            "experiment.seed": _flag("--seed", transform="int"),
-        },
-        data_path=DataPathStrategy(cli_flag="--datadir", env_var="DATA_DIR"),
-    ),
+
     "FedPall": FrameworkAdapter(
         name="FedPall",
         repo_dir="FedPall",
