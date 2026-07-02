@@ -301,13 +301,13 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
         entry_script="main.py",
         param_map={
             "data.name": _flag("--dataset"),
-            "data.num_clients": _flag("--num_clients", transform="int"),
-            "training.global_rounds": _flag("--rounds", transform="int"),
-            "training.local_epochs": _flag("--local_epochs", transform="int"),
-            "training.learning_rate": _flag("--lr", transform="float"),
+            "data.num_clients": _flag("--parti_num", transform="int"),
+            "training.global_rounds": _flag("--communication_epoch", transform="int"),
+            "training.local_epochs": _flag("--local_epoch", transform="int"),
             "experiment.seed": _flag("--seed", transform="int"),
         },
-        data_path=DataPathStrategy(cli_flag="--datadir", env_var="DATA_DIR"),
+        static_args=("--model", "feddap"),
+        data_path=DataPathStrategy(cli_flag=None, env_var="DATA_DIR"),
     ),
     "FedGMKD": FrameworkAdapter(
         name="FedGMKD",
