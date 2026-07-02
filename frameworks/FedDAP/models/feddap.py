@@ -288,9 +288,8 @@ class feddap(FederatedModel):
 
 
 
-        # agg_protos = agg_func(agg_protos_label)
-
-        agg_protos = agg_func_dp(agg_protos_label,dps=0.05,dpp=0.1)
+        agg_protos = agg_func(agg_protos_label)
+        # agg_protos = agg_func_dp(agg_protos_label,dps=0.05,dpp=0.1)
         self.local_protos[index] = agg_protos
 
 
