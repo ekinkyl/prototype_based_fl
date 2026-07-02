@@ -1,0 +1,7 @@
+torch
+torchvision
+numpy
+calmsize
+h5py
+ujson
+scikit-learn
