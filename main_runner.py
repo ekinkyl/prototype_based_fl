@@ -556,7 +556,7 @@ def build_command(
     cli_args = build_cli_args(config, adapter)
     env = build_env(config, adapter)
     command = [adapter.python, str(entry), *cli_args]
-    return command, env, repo_path
+    return command, env, entry.parent
 
 
 def setup_logging(log_file: Path) -> None:
