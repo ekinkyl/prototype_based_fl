@@ -277,15 +277,23 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
     "FedPall": FrameworkAdapter(
         name="FedPall",
         repo_dir="FedPall",
-        entry_script="run.py",
+        entry_script="exps/federated_main.py",
         param_map={
             "data.name": _flag("--dataset"),
-            "training.global_rounds": _flag("--rounds", transform="int"),
-            "training.local_epochs": _flag("--local_epochs", transform="int"),
+            "data.num_clients": _flag("--num_users", transform="int"),
+            "training.global_rounds": _flag("--iters", transform="int"),
+            "training.local_epochs": _flag("--wk_iters", transform="int"),
+            "training.batch_size": _flag("--batch", transform="int"),
             "training.learning_rate": _flag("--lr", transform="float"),
             "experiment.seed": _flag("--seed", transform="int"),
         },
-        data_path=DataPathStrategy(cli_flag="--data_dir", env_var="DATA_PATH"),
+        static_args=("--exp", "1", "--mode", "ours"),
+        data_path=DataPathStrategy(
+            cli_flag=None,
+            env_var="DATA_ROOT",
+            symlink_into_repo=None,
+            append_dataset_name=False
+        ),
     ),
     "FedDAP": FrameworkAdapter(
         name="FedDAP",
@@ -549,6 +557,18 @@ def build_command(
                 subprocess.run(
                     [sys.executable, str(gen_script)], 
                     cwd=str(repo_path / "dataset"), 
+                    check=True
+                )
+
+        # --- FedPall Special Hook ---
+        if adapter.name == "FedPall" and config["data"]["name"] in ["mnist", "fl_digits"]:
+            gen_script = repo_path / "data" / "generate_mnist.py"
+            data_dir = repo_path / "data" / "Digits" / "MNIST" / "partitions"
+            if gen_script.exists() and not data_dir.exists():
+                logging.info("[%s] Running data generation script...", adapter.name)
+                subprocess.run(
+                    [sys.executable, str(gen_script)], 
+                    cwd=str(repo_path / "data"), 
                     check=True
                 )
 
