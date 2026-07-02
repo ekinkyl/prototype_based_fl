@@ -756,6 +756,12 @@ def ours(args, train_loader_list, test_loader_list):
         local_models = [copy.deepcopy(global_model).to(args.device) for idx in range(args.num_users)]
         discriminator = Discriminator(global_model, args.num_users).to(args.device)
         datasets_name = ["art_painting", "cartoon", "photo", "sketch"]
+    elif args.dataset in ["fl_digits", "mnist"]:
+        from models import adcol_resnet10
+        global_model = adcol_resnet10(num_classes=args.num_classes).to(args.device)
+        local_models = [copy.deepcopy(global_model).to(args.device) for idx in range(args.num_users)]
+        discriminator = Discriminator(global_model, args.num_users).to(args.device)
+        datasets_name = ["MNIST"]
     global_classifier = classifier_model(args, args.num_classes).to(args.device)
     train_loss = {item: [] for item in datasets_name}
     accuracy_list = {item: [] for item in datasets_name}
