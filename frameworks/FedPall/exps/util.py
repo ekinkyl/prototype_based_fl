@@ -163,7 +163,7 @@ def prepare_data_mnist_pfl(args):
     transform_mnist = transforms.Compose([
             transforms.Resize([args.size,args.size]),
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            transforms.Normalize((0.5,), (0.5,))
     ])
     train_loaders, test_loaders = [], []
     for idx in range(args.num_users):
