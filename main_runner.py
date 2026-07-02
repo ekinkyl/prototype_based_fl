@@ -309,6 +309,22 @@ FRAMEWORK_ADAPTERS: dict[str, FrameworkAdapter] = {
         static_args=("--model", "feddap"),
         data_path=DataPathStrategy(cli_flag=None, env_var="DATA_DIR"),
     ),
+    "FedProto": FrameworkAdapter(
+        name="FedProto",
+        repo_dir="FedProto",
+        entry_script="exps/federated_main.py",
+        param_map={
+            "data.name": _flag("--dataset"),
+            "data.num_clients": _flag("--num_users", transform="int"),
+            "training.global_rounds": _flag("--rounds", transform="int"),
+            "training.local_epochs": _flag("--train_ep", transform="int"),
+            "training.batch_size": _flag("--local_bs", transform="int"),
+            "training.learning_rate": _flag("--lr", transform="float"),
+            "experiment.seed": _flag("--seed", transform="int"),
+        },
+        static_args=(),
+        data_path=DataPathStrategy(cli_flag="--data_dir", env_var=None, append_dataset_name=False),
+    ),
     "FedGMKD": FrameworkAdapter(
         name="FedGMKD",
         repo_dir="FedGMKD",
