@@ -35,6 +35,8 @@ from fedproto.client import FedProtoClient, FedProtoLocalTest
 from fedproto.proto_utils import agg_func
 from fedproto.server import FedProtoServer
 from attack.sdar_attacker import SDARAttackerFedProto
+from attack.metrics import (evaluate_attack, compute_per_class_mse,
+                             compute_real_class_means, compute_downstream_accuracy)
 
 
 def main():
@@ -194,20 +196,124 @@ def main():
     print(f"\n  Mean test accuracy: {np.mean(acc_list):.4f} "
           f"± {np.std(acc_list):.4f}")
 
-    # ── Final attack evaluation ──
-    print("\n[Final attack reconstruction for all clients...]")
-    for idx in range(min(5, args.num_users)):  # First 5 clients
+    # ── Final attack reconstruction + evaluation ──
+    print(f"\n{'='*60}")
+    print(f"  ATTACK EVALUATION")
+    print(f"{'='*60}")
+
+    eval_clients = min(5, args.num_users)
+    all_mse = []
+    all_psnr = []
+    all_ssim = []
+    all_per_class_mse = {}
+    all_downstream_acc = []
+
+    for idx in range(eval_clients):
+        # Reconstruct
         recons = attacker.attack(local_protos[idx], client_idx=idx)
         attacker.save_reconstructions(recons, recon_dir, args.rounds - 1,
                                        client_idx=idx)
-        print(f"  Client {idx}: reconstructed {len(recons)} classes")
+
+        # Compute ground-truth class mean images for this client
+        real_class_means = compute_real_class_means(
+            train_dataset, user_groups[idx], args.num_classes, device=args.device)
+
+        # Compute per-class MSE
+        per_class_mse = compute_per_class_mse(recons, real_class_means)
+        all_per_class_mse[idx] = per_class_mse
+
+        # Build batched tensors for MSE / PSNR / SSIM
+        shared_labels = sorted(set(recons.keys()) & set(real_class_means.keys()))
+        if len(shared_labels) > 0:
+            recon_batch = torch.stack([recons[l] for l in shared_labels])
+            real_batch = torch.stack([real_class_means[l] for l in shared_labels])
+
+            metrics = evaluate_attack(real_batch, recon_batch)
+            all_mse.append(metrics['mse'])
+            all_psnr.append(metrics['psnr'])
+            all_ssim.append(metrics['ssim'])
+
+            print(f"\n  Client {idx} ({len(shared_labels)} classes):")
+            print(f"    MSE  = {metrics['mse']:.6f}")
+            print(f"    PSNR = {metrics['psnr']:.2f} dB")
+            print(f"    SSIM = {metrics['ssim']:.4f}")
+            for l in shared_labels:
+                print(f"      Class {l}: MSE = {per_class_mse.get(l, 'N/A'):.6f}")
+
+    # ── Downstream classifier accuracy ──
+    print(f"\n  --- Downstream Classifier Test ---")
+    try:
+        # Train a small fresh classifier on the server's auxiliary data
+        # and evaluate the reconstructed images on it
+        eval_model, _, _ = get_model(args.model, num_classes=args.num_classes, pretrained=False)
+        if args.model == 'resnet18':
+            try:
+                import torch.utils.model_zoo as model_zoo
+                pretrained_dict = model_zoo.load_url(
+                    'https://download.pytorch.org/models/resnet18-5c106cde.pth',
+                    progress=False)
+                eval_model.load_state_dict(pretrained_dict, strict=False)
+            except Exception:
+                pass
+        eval_model.to(args.device)
+        eval_model.eval()
+
+        # Collect all reconstructions and their labels
+        all_recon_imgs = []
+        all_recon_labels = []
+        for idx in range(eval_clients):
+            recons = attacker.attack(local_protos[idx], client_idx=idx)
+            for label, img in recons.items():
+                all_recon_imgs.append(img)
+                all_recon_labels.append(label)
+
+        if len(all_recon_imgs) > 0:
+            recon_batch = torch.stack(all_recon_imgs)
+            label_batch = torch.tensor(all_recon_labels, dtype=torch.long)
+
+            ds_acc = compute_downstream_accuracy(
+                recon_batch, label_batch, eval_model, device=args.device)
+            all_downstream_acc.append(ds_acc)
+            print(f"  Downstream accuracy: {ds_acc:.4f} "
+                  f"({int(ds_acc * len(label_batch))}/{len(label_batch)} correct)")
+        else:
+            print("  No reconstructions available for downstream test.")
+    except Exception as e:
+        print(f"  Downstream classifier test skipped: {e}")
+
+    # ── Summary table ──
+    print(f"\n{'='*60}")
+    print(f"  SUMMARY")
+    print(f"{'='*60}")
+    print(f"  FedProto Test Accuracy : {np.mean(acc_list):.4f} ± {np.std(acc_list):.4f}")
+    print(f"  ──────────────────────────────────")
+    print(f"  Attack Metrics (avg over {eval_clients} clients):")
+    if all_mse:
+        print(f"    MSE  : {np.mean(all_mse):.6f} ± {np.std(all_mse):.6f}")
+        print(f"    PSNR : {np.mean(all_psnr):.2f} ± {np.std(all_psnr):.2f} dB")
+        print(f"    SSIM : {np.mean(all_ssim):.4f} ± {np.std(all_ssim):.4f}")
+    if all_downstream_acc:
+        print(f"    Downstream Acc : {np.mean(all_downstream_acc):.4f}")
+    print(f"{'='*60}\n")
 
     # ── Save results ──
     np.save(os.path.join(args.results_dir, 'sdar_loss.npy'),
             np.array(train_loss_history))
     np.save(os.path.join(args.results_dir, 'sdar_acc.npy'),
             np.array(acc_list))
-    print(f"\n  Results saved to {args.results_dir}")
+
+    # Save attack metrics
+    attack_metrics = {
+        'mse': all_mse,
+        'psnr': all_psnr,
+        'ssim': all_ssim,
+        'downstream_acc': all_downstream_acc,
+        'per_class_mse': {str(k): v for k, v in all_per_class_mse.items()},
+    }
+    np.save(os.path.join(args.results_dir, 'attack_metrics.npy'),
+            attack_metrics, allow_pickle=True)
+
+    print(f"  Results saved to {args.results_dir}")
 
 
 if __name__ == '__main__':
