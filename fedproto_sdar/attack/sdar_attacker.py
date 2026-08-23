@@ -453,16 +453,29 @@ class SDARAttackerFedProto:
 
     def save_reconstructions(self, reconstructions, save_path, round_num,
                               client_idx=None):
-        """Save reconstructed images as a figure."""
+        """
+        Save reconstructed images as:
+        1. A composite matplotlib figure (for visual inspection)
+        2. Individual per-class PNG images (for metric evaluation)
+        3. A JSON metadata file mapping class labels
+        """
+        import json
+
         n = len(reconstructions)
         if n == 0:
             return
 
+        suffix = f'_client{client_idx}' if client_idx is not None else ''
+        sorted_items = sorted(reconstructions.items())
+
+        # ── 1. Composite figure ──
         fig, axes = plt.subplots(1, n, figsize=(n * 3, 3))
         if n == 1:
             axes = [axes]
 
-        for i, (label, img) in enumerate(sorted(reconstructions.items())):
+        class_labels = []
+        for i, (label, img) in enumerate(sorted_items):
+            class_labels.append(int(label))
             # img is (3, 32, 32) or (1, 28, 28)
             img_np = img.permute(1, 2, 0).numpy()
             img_np = np.clip(img_np, 0, 1)
@@ -474,8 +487,33 @@ class SDARAttackerFedProto:
             axes[i].set_title(f'Class {label}')
             axes[i].set(xticks=[], yticks=[])
 
-        suffix = f'_client{client_idx}' if client_idx is not None else ''
         fig_path = os.path.join(save_path, f'recon_round{round_num}{suffix}.png')
         plt.savefig(fig_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
+
+        # ── 2. Individual per-class images ──
+        for label, img in sorted_items:
+            img_np = img.permute(1, 2, 0).numpy()
+            img_np = np.clip(img_np * 255, 0, 255).astype(np.uint8)
+            if img_np.shape[2] == 1:
+                img_np = img_np.squeeze(2)
+            from PIL import Image as PILImage
+            pil_img = PILImage.fromarray(img_np)
+            ind_path = os.path.join(
+                save_path,
+                f'recon_round{round_num}{suffix}_class{label}.png')
+            pil_img.save(ind_path)
+
+        # ── 3. Metadata JSON ──
+        meta = {
+            'round': round_num,
+            'client_idx': client_idx,
+            'class_labels': class_labels,
+            'num_classes': n,
+        }
+        meta_path = os.path.join(
+            save_path, f'recon_round{round_num}{suffix}_meta.json')
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+
         print(f"  [SDAR] Saved reconstructions to {fig_path}")
