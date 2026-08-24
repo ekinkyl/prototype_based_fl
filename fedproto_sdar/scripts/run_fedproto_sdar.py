@@ -21,6 +21,7 @@ import time
 import random
 import numpy as np
 import torch
+from torchvision import datasets, transforms
 from pathlib import Path
 from tqdm import tqdm
 
@@ -243,8 +244,7 @@ def main():
     # ── Downstream classifier accuracy ──
     print(f"\n  --- Downstream Classifier Test ---")
     try:
-        # Train a small fresh classifier on the server's auxiliary data
-        # and evaluate the reconstructed images on it
+        # Build a ResNet18 with 10 outputs and fine-tune the fc layer on CIFAR-10
         eval_model, _, _ = get_model(args.model, num_classes=args.num_classes, pretrained=False)
         if args.model == 'resnet18':
             try:
@@ -252,10 +252,56 @@ def main():
                 pretrained_dict = model_zoo.load_url(
                     'https://download.pytorch.org/models/resnet18-5c106cde.pth',
                     progress=False)
-                eval_model.load_state_dict(pretrained_dict, strict=False)
+                model_dict = eval_model.state_dict()
+                # Only load layers that match in size (skip fc layer)
+                filtered = {k: v for k, v in pretrained_dict.items()
+                            if k in model_dict and v.shape == model_dict[k].shape}
+                model_dict.update(filtered)
+                eval_model.load_state_dict(model_dict)
+                print(f"  Loaded {len(filtered)}/{len(pretrained_dict)} pretrained layers.")
             except Exception:
                 pass
+
         eval_model.to(args.device)
+
+        # Freeze all layers except fc
+        for param in eval_model.parameters():
+            param.requires_grad = False
+        for param in eval_model.fc.parameters():
+            param.requires_grad = True
+
+        # Fine-tune fc on CIFAR-10 for 2 epochs
+        print("  Fine-tuning classifier on CIFAR-10 (2 epochs)...")
+        from torch.utils.data import DataLoader
+        ft_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                 (0.2023, 0.1994, 0.2010)),
+        ])
+        ft_dataset = datasets.CIFAR10(args.data_dir, train=True, download=True,
+                                       transform=ft_transform)
+        ft_loader = DataLoader(ft_dataset, batch_size=256, shuffle=True,
+                               num_workers=2, drop_last=True)
+        ft_optimizer = torch.optim.Adam(eval_model.fc.parameters(), lr=0.001)
+        ft_criterion = torch.nn.CrossEntropyLoss()
+
+        eval_model.train()
+        for epoch in range(2):
+            correct = 0
+            total = 0
+            for x, y in ft_loader:
+                x, y = x.to(args.device), y.to(args.device)
+                out = eval_model(x)
+                if isinstance(out, tuple):
+                    out = out[0]
+                loss = ft_criterion(out, y)
+                ft_optimizer.zero_grad()
+                loss.backward()
+                ft_optimizer.step()
+                correct += (out.argmax(1) == y).sum().item()
+                total += y.size(0)
+            print(f"    Epoch {epoch+1}: acc = {correct/total:.4f}")
+
         eval_model.eval()
 
         # Collect all reconstructions and their labels
