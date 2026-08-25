@@ -202,7 +202,9 @@ def evaluate_attack(x_real, x_recon):
     return {'mse': mse, 'psnr': psnr, 'ssim': ssim}
 
 
-def compute_real_class_means(dataset, idxs, num_classes, device='cpu'):
+def compute_real_class_means(dataset, idxs, num_classes, device='cpu',
+                              norm_mean=(0.4914, 0.4822, 0.4465),
+                              norm_std=(0.2023, 0.1994, 0.2010)):
     """
     Compute the per-class mean image from a client's training data.
     This is the "ground truth" to compare the attacker's reconstructions against.
@@ -210,11 +212,16 @@ def compute_real_class_means(dataset, idxs, num_classes, device='cpu'):
     Since FedProto prototypes represent class-level averages, the fairest
     comparison is against the mean image of each class (not individual images).
 
+    Images are denormalized from the training transform back to [0,1] before
+    averaging, since the decoder outputs [0,1] values.
+
     Args:
         dataset: the base training dataset
         idxs: list of dataset indices belonging to this client
         num_classes: total number of classes
         device: 'cuda' or 'cpu'
+        norm_mean: dataset normalization mean (tuple)
+        norm_std: dataset normalization std (tuple)
 
     Returns:
         dict {label: (C, H, W) mean image tensor, values in [0,1]}
@@ -222,12 +229,18 @@ def compute_real_class_means(dataset, idxs, num_classes, device='cpu'):
     from collections import defaultdict
     class_images = defaultdict(list)
 
+    # Build denormalization tensors
+    mean_t = torch.tensor(norm_mean).view(-1, 1, 1)  # (C, 1, 1)
+    std_t = torch.tensor(norm_std).view(-1, 1, 1)    # (C, 1, 1)
+
     for idx in idxs:
         img, label = dataset[idx]
         if isinstance(img, torch.Tensor):
-            class_images[label].append(img)
+            # Denormalize: original = normalized * std + mean
+            img = img * std_t + mean_t
         else:
-            class_images[label].append(torch.tensor(img))
+            img = torch.tensor(img) * std_t + mean_t
+        class_images[label].append(img)
 
     class_means = {}
     for label, imgs in class_images.items():

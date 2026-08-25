@@ -101,12 +101,24 @@ class SDARAttackerFedProto:
     classification loss. There is NO separate server model.
     """
 
+    # Dataset normalization constants (for denormalizing before decoder/discriminator)
+    NORM_PARAMS = {
+        'cifar10':  {'mean': (0.4914, 0.4822, 0.4465), 'std': (0.2023, 0.1994, 0.2010)},
+        'cifar100': {'mean': (0.4914, 0.4822, 0.4465), 'std': (0.2023, 0.1994, 0.2010)},
+        'mnist':    {'mean': (0.1307,),                'std': (0.3081,)},
+    }
+
     def __init__(self, args, server_aux_dataset, server_aux_idxs, device='cpu'):
         self.args = args
         self.device = device
         self.conditional = args.conditional
         self.lambda1 = args.lambda1
         self.lambda2 = args.lambda2
+
+        # Store normalization params for denormalization
+        norm = self.NORM_PARAMS.get(args.dataset, self.NORM_PARAMS['cifar10'])
+        self.norm_mean = torch.tensor(norm['mean']).view(1, -1, 1, 1)
+        self.norm_std = torch.tensor(norm['std']).view(1, -1, 1, 1)
 
         # ── Server auxiliary data loader ──
         self.aux_loader = DataLoader(
@@ -340,11 +352,20 @@ class SDARAttackerFedProto:
 
         return loss.item()
 
+    def _denormalize(self, x):
+        """
+        Reverse the dataset normalization: x_original = x_normalized * std + mean.
+        Converts normalized images (range ~[-2.4, 2.7]) back to [0, 1].
+        """
+        mean = self.norm_mean.to(x.device)
+        std = self.norm_std.to(x.device)
+        return torch.clamp(x * std + mean, 0.0, 1.0)
+
     def _train_decoder_step(self, x_aux, y_aux):
         """Train decoder: reconstruct aux images from simulator protos."""
         self.dec_optimizer.zero_grad()
 
-        # Get simulator prototypes (detached — don't update simulator here)
+        # Simulator processes normalized images (correct — matches client model)
         with torch.no_grad():
             _, proto_sim = self.simulator(x_aux)
         proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
@@ -355,8 +376,12 @@ class SDARAttackerFedProto:
         else:
             x_recon = self.decoder(proto_sim_flat)
 
-        # MSE reconstruction loss
-        loss_mse = self.criterion_mse(x_recon, x_aux)
+        # Denormalize x_aux so both sides are in [0, 1]
+        # (decoder outputs sigmoid → [0,1], so target must also be [0,1])
+        x_aux_denorm = self._denormalize(x_aux)
+
+        # MSE reconstruction loss (both in [0, 1])
+        loss_mse = self.criterion_mse(x_recon, x_aux_denorm)
 
         # GAN loss (fool decoder discriminator)
         loss_gen = torch.tensor(0.0, device=self.device)
@@ -382,8 +407,10 @@ class SDARAttackerFedProto:
         """Train decoder discriminator: distinguish real vs decoded images."""
         self.d_dis_optimizer.zero_grad()
 
-        # Real images = aux data
-        # Fake images = decoder output
+        # Denormalize real images to [0,1] (same space as decoder output)
+        x_aux_denorm = self._denormalize(x_aux)
+
+        # Fake images = decoder output (already [0,1])
         with torch.no_grad():
             _, proto_sim = self.simulator(x_aux)
             proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
@@ -392,12 +419,12 @@ class SDARAttackerFedProto:
             else:
                 x_recon = self.decoder(proto_sim_flat)
 
-        # Discriminator predictions
+        # Discriminator sees both real and fake in [0,1]
         if self.conditional:
-            d_real = self.d_dis(x_aux, y_aux)
+            d_real = self.d_dis(x_aux_denorm, y_aux)
             d_fake = self.d_dis(x_recon, y_aux)
         else:
-            d_real = self.d_dis(x_aux)
+            d_real = self.d_dis(x_aux_denorm)
             d_fake = self.d_dis(x_recon)
 
         loss_real = self.criterion_bce(d_real, torch.ones_like(d_real))
