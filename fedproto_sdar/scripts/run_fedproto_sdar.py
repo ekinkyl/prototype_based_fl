@@ -151,7 +151,11 @@ def main():
 
             # If ablation mode: keep the raw individual protos for the attacker
             if args.no_proto_avg:
-                raw_protos[idx] = copy.deepcopy(protos)
+                # Safely detach and clone PyTorch tensors (deepcopy fails on graph tensors)
+                raw_protos[idx] = {
+                    lbl: [p.detach().clone() for p in p_list] 
+                    for lbl, p_list in protos.items()
+                }
 
             # Always average for FedProto FL (keeps accuracy identical)
             agg_protos = agg_func(protos)
