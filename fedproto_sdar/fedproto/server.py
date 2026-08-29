@@ -33,7 +33,7 @@ class FedProtoServer:
         self.global_protos = []  # empty list = no protos yet (first round)
         self.attacker = attacker
 
-    def receive_and_aggregate(self, local_protos, round_num):
+    def receive_and_aggregate(self, local_protos, round_num, raw_protos=None):
         """
         Process prototypes from all clients.
 
@@ -41,6 +41,10 @@ class FedProtoServer:
             local_protos: dict {client_idx: {label: proto_tensor}}
                 Per-class aggregated prototypes from each client.
             round_num: current round number.
+            raw_protos: optional dict {client_idx: {label: [proto1, proto2, ...]}}
+                Individual per-image prototypes (no-averaging ablation).
+                If provided, the attacker trains on these instead of local_protos.
+                FedProto aggregation always uses local_protos (averaged).
 
         Returns:
             global_protos: dict {label: [proto_tensor]}
@@ -48,14 +52,17 @@ class FedProtoServer:
             attack_results: dict with attack info (or empty if no attack)
         """
         # ── Step 1: Aggregate prototypes across clients ──
+        # Always uses averaged local_protos — FedProto math is unchanged.
         self.global_protos = proto_aggregation(local_protos)
 
         # ── Step 2: Run SDAR attack if enabled ──
         attack_results = {}
         if self.attacker is not None:
-            # Train the attack models using the received prototypes
+            # Use raw individual protos for attacker if provided,
+            # otherwise fall back to the averaged local_protos (original behavior).
+            attacker_protos = raw_protos if raw_protos is not None else local_protos
             round_log = self.attacker.train_attack_round(
-                local_protos, round_num)
+                attacker_protos, round_num)
             attack_results['train_log'] = round_log
 
             # Perform attack inference on a subset of clients

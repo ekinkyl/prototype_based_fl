@@ -15,6 +15,46 @@ import math
 
 
 # ──────────────────────────────────────────────────────────
+# Denormalization helper
+# ──────────────────────────────────────────────────────────
+
+# Standard normalization parameters per dataset
+NORM_PARAMS = {
+    'cifar10':  {'mean': (0.4914, 0.4822, 0.4465), 'std': (0.2023, 0.1994, 0.2010)},
+    'cifar100': {'mean': (0.4914, 0.4822, 0.4465), 'std': (0.2023, 0.1994, 0.2010)},
+    'mnist':    {'mean': (0.1307,),                'std': (0.3081,)},
+}
+
+
+def denormalize(x, dataset='cifar10'):
+    """
+    Reverse dataset normalization: x_original = x_normalized * std + mean.
+
+    Both the attacker's decoder output and the real images must be on the
+    same [0, 1] scale for MSE to be mathematically meaningful.
+
+    Args:
+        x: (B, C, H, W) or (C, H, W) normalized tensor
+        dataset: dataset name to look up normalization params
+
+    Returns:
+        Tensor with values clamped to [0, 1]
+    """
+    params = NORM_PARAMS.get(dataset, NORM_PARAMS['cifar10'])
+    mean = torch.tensor(params['mean'])
+    std = torch.tensor(params['std'])
+
+    if x.dim() == 4:
+        mean = mean.view(1, -1, 1, 1).to(x.device)
+        std = std.view(1, -1, 1, 1).to(x.device)
+    else:
+        mean = mean.view(-1, 1, 1).to(x.device)
+        std = std.view(-1, 1, 1).to(x.device)
+
+    return torch.clamp(x * std + mean, 0.0, 1.0)
+
+
+# ──────────────────────────────────────────────────────────
 # MSE
 # ──────────────────────────────────────────────────────────
 

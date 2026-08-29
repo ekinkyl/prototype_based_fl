@@ -81,6 +81,9 @@ def get_args():
                         help="batch size for SDAR attack training")
     parser.add_argument('--diff_simulator', action='store_true', default=False,
                         help="use a completely different architecture for the simulator (black-box setting)")
+    parser.add_argument('--no_proto_avg', action='store_true', default=False,
+                        help="ablation: send individual per-image prototypes to the "
+                             "attacker instead of class-averaged ones")
 
     # ── General arguments ──
     parser.add_argument('--gpu', type=int, default=0,

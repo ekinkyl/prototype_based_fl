@@ -54,15 +54,20 @@ class PrototypeBank:
         Add prototypes received from clients.
 
         Args:
-            client_protos_dict: dict {client_idx: {label: proto_tensor}}
+            client_protos_dict: dict {client_idx: {label: proto_or_list}}
+                proto_or_list can be:
+                  - a single Tensor (averaged mode)
+                  - a list of Tensors (no-averaging / individual mode)
         """
         for client_idx, protos in client_protos_dict.items():
             for label, proto in protos.items():
                 if isinstance(proto, torch.Tensor):
                     self.add(proto, label)
                 elif isinstance(proto, list):
-                    # Sometimes proto is [tensor] (list with single element)
-                    self.add(proto[0] if isinstance(proto[0], torch.Tensor) else proto, label)
+                    # Add ALL prototypes in the list
+                    for p in proto:
+                        if isinstance(p, torch.Tensor):
+                            self.add(p, label)
 
     def sample(self, batch_size, device='cpu'):
         """
@@ -477,6 +482,29 @@ class SDARAttackerFedProto:
 
         self.decoder.train()
         return reconstructions
+
+    def attack_batch(self, protos_batch, labels_batch):
+        """
+        Efficiently reconstruct images from a batch of prototypes.
+
+        Args:
+            protos_batch: (N, 512, 1, 1) or (N, 512) tensor of prototypes
+            labels_batch: (N,) tensor of integer class labels
+
+        Returns:
+            (N, 3, 32, 32) tensor of reconstructed images in [0, 1]
+        """
+        self.decoder.eval()
+        with torch.no_grad():
+            protos_batch = protos_batch.to(self.device)
+            labels_batch = labels_batch.to(self.device)
+            protos_flat = protos_batch.view(protos_batch.size(0), -1)
+            if self.conditional:
+                x_recon = self.decoder(protos_flat, labels_batch)
+            else:
+                x_recon = self.decoder(protos_flat)
+        self.decoder.train()
+        return x_recon.cpu()
 
     def save_reconstructions(self, reconstructions, save_path, round_num,
                               client_idx=None):

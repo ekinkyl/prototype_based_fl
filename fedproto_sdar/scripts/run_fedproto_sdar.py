@@ -24,6 +24,7 @@ import torch
 from torchvision import datasets, transforms
 from pathlib import Path
 from tqdm import tqdm
+from matplotlib import pyplot as plt
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.resolve()
@@ -37,7 +38,8 @@ from fedproto.proto_utils import agg_func
 from fedproto.server import FedProtoServer
 from attack.sdar_attacker import SDARAttackerFedProto
 from attack.metrics import (evaluate_attack, compute_per_class_mse,
-                             compute_real_class_means, compute_downstream_accuracy)
+                             compute_real_class_means, compute_downstream_accuracy,
+                             denormalize)
 
 
 def main():
@@ -61,6 +63,7 @@ def main():
     print(f"  Attack: λ1={args.lambda1} λ2={args.lambda2} "
           f"epochs={args.attack_epochs}")
     print(f"  Conditional: {args.conditional}")
+    print(f"  No Proto Avg (ablation): {args.no_proto_avg}")
     print(f"  Device: {args.device}")
     print(f"{'='*60}\n")
 
@@ -129,7 +132,8 @@ def main():
     for round_num in tqdm(range(args.rounds), desc="FedProto+SDAR"):
         local_weights = []
         local_losses = []
-        local_protos = {}
+        local_protos = {}      # averaged protos (for FedProto FL)
+        raw_protos = {}        # individual protos (for attacker, if --no_proto_avg)
 
         print(f'\n | Global Training Round : {round_num + 1} |')
 
@@ -145,6 +149,11 @@ def main():
                 model=copy.deepcopy(local_model_list[idx]),
                 global_round=round_num)
 
+            # If ablation mode: keep the raw individual protos for the attacker
+            if args.no_proto_avg:
+                raw_protos[idx] = copy.deepcopy(protos)
+
+            # Always average for FedProto FL (keeps accuracy identical)
             agg_protos = agg_func(protos)
 
             local_weights.append(copy.deepcopy(w))
@@ -158,8 +167,11 @@ def main():
             local_model_list[idx] = local_model
 
         # ── Server: aggregate + attack ──
+        # Pass raw_protos to attacker when in ablation mode;
+        # FedProto aggregation always uses averaged local_protos.
         global_protos, attack_results = server.receive_and_aggregate(
-            local_protos, round_num)
+            local_protos, round_num,
+            raw_protos=raw_protos if args.no_proto_avg else None)
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss_history.append(loss_avg)
@@ -209,37 +221,133 @@ def main():
     all_per_class_mse = {}
     all_downstream_acc = []
 
-    for idx in range(eval_clients):
-        # Reconstruct
-        recons = attacker.attack(local_protos[idx], client_idx=idx)
-        attacker.save_reconstructions(recons, recon_dir, args.rounds - 1,
-                                       client_idx=idx)
+    if args.no_proto_avg:
+        # ── ABLATION MODE: compare individual reconstructions vs individual source images ──
+        print("\n  [ABLATION] Evaluating with individual (non-averaged) prototypes")
+        print("  Evaluating Client 0 only, 10 images per class...")
 
-        # Compute ground-truth class mean images for this client
-        real_class_means = compute_real_class_means(
-            train_dataset, user_groups[idx], args.num_classes, device=args.device)
+        eval_client_idx = 0
+        client_raw = raw_protos.get(eval_client_idx, {})
+        n_per_class = 10  # evaluate 10 random images per class
 
-        # Compute per-class MSE
-        per_class_mse = compute_per_class_mse(recons, real_class_means)
-        all_per_class_mse[idx] = per_class_mse
+        ablation_recon_all = []
+        ablation_real_all = []
+        ablation_labels_all = []
 
-        # Build batched tensors for MSE / PSNR / SSIM
-        shared_labels = sorted(set(recons.keys()) & set(real_class_means.keys()))
-        if len(shared_labels) > 0:
-            recon_batch = torch.stack([recons[l] for l in shared_labels])
-            real_batch = torch.stack([real_class_means[l] for l in shared_labels])
+        # Get the real images for this client (denormalized to [0,1])
+        from collections import defaultdict
+        client_idxs = list(user_groups[eval_client_idx])
+        real_images_by_class = defaultdict(list)
+        for didx in client_idxs:
+            img, lbl = train_dataset[didx]
+            if isinstance(img, torch.Tensor):
+                img = denormalize(img, dataset=args.dataset)
+            real_images_by_class[lbl].append(img)
 
+        for label, proto_list in client_raw.items():
+            if not isinstance(proto_list, list):
+                proto_list = [proto_list]
+            real_imgs = real_images_by_class.get(label, [])
+
+            # Take min(n_per_class, available) samples
+            n_eval = min(n_per_class, len(proto_list), len(real_imgs))
+            if n_eval == 0:
+                continue
+
+            # Sample random indices
+            sample_indices = np.random.choice(
+                min(len(proto_list), len(real_imgs)), n_eval, replace=False)
+
+            for si in sample_indices:
+                proto_tensor = proto_list[si]
+                if isinstance(proto_tensor, torch.Tensor):
+                    proto_tensor = proto_tensor.detach()
+                ablation_recon_all.append(proto_tensor)
+                ablation_real_all.append(real_imgs[si])
+                ablation_labels_all.append(label)
+
+        if len(ablation_recon_all) > 0:
+            # Stack prototypes and reconstruct them all at once
+            proto_batch = torch.stack(ablation_recon_all)
+            label_batch = torch.tensor(ablation_labels_all, dtype=torch.long)
+            recon_batch = attacker.attack_batch(proto_batch, label_batch)
+
+            # Stack the real images
+            real_batch = torch.stack(ablation_real_all)
+
+            # Compute metrics
             metrics = evaluate_attack(real_batch, recon_batch)
             all_mse.append(metrics['mse'])
             all_psnr.append(metrics['psnr'])
             all_ssim.append(metrics['ssim'])
 
-            print(f"\n  Client {idx} ({len(shared_labels)} classes):")
+            print(f"\n  Client {eval_client_idx} ({len(set(ablation_labels_all))} classes, "
+                  f"{len(ablation_recon_all)} individual images):")
             print(f"    MSE  = {metrics['mse']:.6f}")
             print(f"    PSNR = {metrics['psnr']:.2f} dB")
             print(f"    SSIM = {metrics['ssim']:.4f}")
-            for l in shared_labels:
-                print(f"      Class {l}: MSE = {per_class_mse.get(l, 'N/A'):.6f}")
+
+            # Per-class breakdown
+            for lbl in sorted(set(ablation_labels_all)):
+                mask = [i for i, l in enumerate(ablation_labels_all) if l == lbl]
+                class_recon = recon_batch[mask]
+                class_real = real_batch[mask]
+                class_mse = torch.mean((class_recon - class_real) ** 2).item()
+                all_per_class_mse.setdefault(eval_client_idx, {})[lbl] = class_mse
+                print(f"      Class {lbl}: MSE = {class_mse:.6f} ({len(mask)} images)")
+
+            # Save a composite image of some reconstructions vs originals
+            n_show = min(10, len(ablation_recon_all))
+            fig, axes = plt.subplots(2, n_show, figsize=(n_show * 2, 4))
+            for i in range(n_show):
+                axes[0, i].imshow(real_batch[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                axes[0, i].set_title(f'Real c{ablation_labels_all[i]}')
+                axes[0, i].axis('off')
+                axes[1, i].imshow(recon_batch[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                axes[1, i].set_title(f'Recon c{ablation_labels_all[i]}')
+                axes[1, i].axis('off')
+            plt.suptitle('Ablation: Individual Proto Reconstructions vs Real')
+            plt.tight_layout()
+            save_fig_path = os.path.join(recon_dir, 'ablation_individual_comparison.png')
+            plt.savefig(save_fig_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"\n  Saved comparison figure to {save_fig_path}")
+        else:
+            print("  No individual prototypes available for evaluation.")
+
+    else:
+        # ── ORIGINAL MODE: compare class-averaged reconstructions vs class means ──
+        for idx in range(eval_clients):
+            # Reconstruct
+            recons = attacker.attack(local_protos[idx], client_idx=idx)
+            attacker.save_reconstructions(recons, recon_dir, args.rounds - 1,
+                                           client_idx=idx)
+
+            # Compute ground-truth class mean images for this client
+            real_class_means = compute_real_class_means(
+                train_dataset, user_groups[idx], args.num_classes, device=args.device)
+
+            # Compute per-class MSE
+            per_class_mse = compute_per_class_mse(recons, real_class_means)
+            all_per_class_mse[idx] = per_class_mse
+
+            # Build batched tensors for MSE / PSNR / SSIM
+            shared_labels = sorted(set(recons.keys()) & set(real_class_means.keys()))
+            if len(shared_labels) > 0:
+                recon_batch = torch.stack([recons[l] for l in shared_labels])
+                real_batch = torch.stack([real_class_means[l] for l in shared_labels])
+
+                metrics = evaluate_attack(real_batch, recon_batch)
+                all_mse.append(metrics['mse'])
+                all_psnr.append(metrics['psnr'])
+                all_ssim.append(metrics['ssim'])
+
+                print(f"\n  Client {idx} ({len(shared_labels)} classes):")
+                print(f"    MSE  = {metrics['mse']:.6f}")
+                print(f"    PSNR = {metrics['psnr']:.2f} dB")
+                print(f"    SSIM = {metrics['ssim']:.4f}")
+                for l in shared_labels:
+                    print(f"      Class {l}: MSE = {per_class_mse.get(l, 'N/A'):.6f}")
 
     # ── Downstream classifier accuracy ──
     print(f"\n  --- Downstream Classifier Test ---")
