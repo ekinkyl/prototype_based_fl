@@ -226,98 +226,97 @@ def main():
     all_downstream_acc = []
 
     if args.no_proto_avg:
-        # ── ABLATION MODE: compare individual reconstructions vs individual source images ──
+        # ── ABLATION MODE: reconstruct from individual prototypes,
+        #    average reconstructions per class, compare vs class mean images
+        #    (same comparison target as the original experiment) ──
         print("\n  [ABLATION] Evaluating with individual (non-averaged) prototypes")
-        print("  Evaluating Client 0 only, 10 images per class...")
+        print("  Reconstructions will be averaged per class and compared against class mean images.")
 
-        eval_client_idx = 0
-        client_raw = raw_protos.get(eval_client_idx, {})
-        n_per_class = 10  # evaluate 10 random images per class
-
-        ablation_recon_all = []
-        ablation_real_all = []
-        ablation_labels_all = []
-
-        # Get the real images for this client (denormalized to [0,1])
-        from collections import defaultdict
-        client_idxs = list(user_groups[eval_client_idx])
-        real_images_by_class = defaultdict(list)
-        for didx in client_idxs:
-            img, lbl = train_dataset[didx]
-            if isinstance(img, torch.Tensor):
-                img = denormalize(img, dataset=args.dataset)
-            real_images_by_class[lbl].append(img)
-
-        for label, proto_list in client_raw.items():
-            if not isinstance(proto_list, list):
-                proto_list = [proto_list]
-            real_imgs = real_images_by_class.get(label, [])
-
-            # Take min(n_per_class, available) samples
-            n_eval = min(n_per_class, len(proto_list), len(real_imgs))
-            if n_eval == 0:
+        for idx in range(eval_clients):
+            client_raw = raw_protos.get(idx, {})
+            if not client_raw:
+                print(f"  Client {idx}: No raw prototypes available, skipping.")
                 continue
 
-            # Sample random indices
-            sample_indices = np.random.choice(
-                min(len(proto_list), len(real_imgs)), n_eval, replace=False)
+            # Step 1: Reconstruct ALL individual prototypes for this client
+            all_protos = []
+            all_labels = []
+            for label, proto_list in client_raw.items():
+                if not isinstance(proto_list, list):
+                    proto_list = [proto_list]
+                for p in proto_list:
+                    if isinstance(p, torch.Tensor):
+                        p = p.detach()
+                    all_protos.append(p)
+                    all_labels.append(label)
 
-            for si in sample_indices:
-                proto_tensor = proto_list[si]
-                if isinstance(proto_tensor, torch.Tensor):
-                    proto_tensor = proto_tensor.detach()
-                ablation_recon_all.append(proto_tensor)
-                ablation_real_all.append(real_imgs[si])
-                ablation_labels_all.append(label)
+            if len(all_protos) == 0:
+                print(f"  Client {idx}: No prototypes found, skipping.")
+                continue
 
-        if len(ablation_recon_all) > 0:
-            # Stack prototypes and reconstruct them all at once
-            proto_batch = torch.stack(ablation_recon_all)
-            label_batch = torch.tensor(ablation_labels_all, dtype=torch.long)
+            proto_batch = torch.stack(all_protos)
+            label_batch = torch.tensor(all_labels, dtype=torch.long)
             recon_batch = attacker.attack_batch(proto_batch, label_batch)
 
-            # Stack the real images
-            real_batch = torch.stack(ablation_real_all)
+            # Step 2: Average reconstructions per class
+            from collections import defaultdict
+            recon_by_class = defaultdict(list)
+            for i, lbl in enumerate(all_labels):
+                recon_by_class[lbl].append(recon_batch[i])
 
-            # Compute metrics
-            metrics = evaluate_attack(real_batch, recon_batch)
-            all_mse.append(metrics['mse'])
-            all_psnr.append(metrics['psnr'])
-            all_ssim.append(metrics['ssim'])
+            avg_recons = {}
+            for lbl, recon_list in recon_by_class.items():
+                stacked = torch.stack(recon_list)
+                avg_recons[lbl] = stacked.mean(dim=0)  # (C, H, W)
 
-            print(f"\n  Client {eval_client_idx} ({len(set(ablation_labels_all))} classes, "
-                  f"{len(ablation_recon_all)} individual images):")
-            print(f"    MSE  = {metrics['mse']:.6f}")
-            print(f"    PSNR = {metrics['psnr']:.2f} dB")
-            print(f"    SSIM = {metrics['ssim']:.4f}")
+            # Step 3: Compute ground-truth class mean images (same as original experiment)
+            real_class_means = compute_real_class_means(
+                train_dataset, user_groups[idx], args.num_classes, device=args.device)
 
-            # Per-class breakdown
-            for lbl in sorted(set(ablation_labels_all)):
-                mask = [i for i, l in enumerate(ablation_labels_all) if l == lbl]
-                class_recon = recon_batch[mask]
-                class_real = real_batch[mask]
-                class_mse = torch.mean((class_recon - class_real) ** 2).item()
-                all_per_class_mse.setdefault(eval_client_idx, {})[lbl] = class_mse
-                print(f"      Class {lbl}: MSE = {class_mse:.6f} ({len(mask)} images)")
+            # Step 4: Compare averaged reconstructions vs class mean images
+            per_class_mse = compute_per_class_mse(avg_recons, real_class_means)
+            all_per_class_mse[idx] = per_class_mse
 
-            # Save a composite image of some reconstructions vs originals
-            n_show = min(10, len(ablation_recon_all))
-            fig, axes = plt.subplots(2, n_show, figsize=(n_show * 2, 4))
-            for i in range(n_show):
-                axes[0, i].imshow(real_batch[i].permute(1, 2, 0).clamp(0, 1).numpy())
-                axes[0, i].set_title(f'Real c{ablation_labels_all[i]}')
-                axes[0, i].axis('off')
-                axes[1, i].imshow(recon_batch[i].permute(1, 2, 0).clamp(0, 1).numpy())
-                axes[1, i].set_title(f'Recon c{ablation_labels_all[i]}')
-                axes[1, i].axis('off')
-            plt.suptitle('Ablation: Individual Proto Reconstructions vs Real')
-            plt.tight_layout()
-            save_fig_path = os.path.join(recon_dir, 'ablation_individual_comparison.png')
-            plt.savefig(save_fig_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"\n  Saved comparison figure to {save_fig_path}")
-        else:
-            print("  No individual prototypes available for evaluation.")
+            shared_labels = sorted(set(avg_recons.keys()) & set(real_class_means.keys()))
+            if len(shared_labels) > 0:
+                recon_stack = torch.stack([avg_recons[l] for l in shared_labels])
+                real_stack = torch.stack([real_class_means[l] for l in shared_labels])
+
+                metrics = evaluate_attack(real_stack, recon_stack)
+                all_mse.append(metrics['mse'])
+                all_psnr.append(metrics['psnr'])
+                all_ssim.append(metrics['ssim'])
+
+                print(f"\n  Client {idx} ({len(shared_labels)} classes, "
+                      f"{len(all_protos)} individual protos -> averaged per class):")
+                print(f"    MSE  = {metrics['mse']:.6f}")
+                print(f"    PSNR = {metrics['psnr']:.2f} dB")
+                print(f"    SSIM = {metrics['ssim']:.4f}")
+                for l in shared_labels:
+                    n_protos = len(recon_by_class[l])
+                    print(f"      Class {l}: MSE = {per_class_mse.get(l, 'N/A'):.6f} "
+                          f"(avg of {n_protos} reconstructions)")
+
+                # Save comparison figure: Row 1 = Class Mean (ground truth), Row 2 = Avg Reconstruction
+                n_show = len(shared_labels)
+                fig, axes = plt.subplots(2, n_show, figsize=(n_show * 2.5, 5))
+                if n_show == 1:
+                    axes = axes.reshape(2, 1)
+                for i, l in enumerate(shared_labels):
+                    axes[0, i].imshow(real_stack[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                    axes[0, i].set_title(f'Class Mean c{l}')
+                    axes[0, i].axis('off')
+                    axes[1, i].imshow(recon_stack[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                    axes[1, i].set_title(f'Avg Recon c{l}')
+                    axes[1, i].axis('off')
+                plt.suptitle('Ablation: Avg of Individual Recons vs Class Mean Images')
+                plt.tight_layout()
+                save_fig_path = os.path.join(recon_dir, f'ablation_avg_comparison_client{idx}.png')
+                plt.savefig(save_fig_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"\n  Saved comparison figure to {save_fig_path}")
+            else:
+                print(f"  Client {idx}: No shared labels between recons and class means.")
 
     else:
         # ── ORIGINAL MODE: compare class-averaged reconstructions vs class means ──
