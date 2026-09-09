@@ -516,12 +516,23 @@ class SDARAttackerFedProto:
 
         # Fake images = decoder output (already [0,1])
         with torch.no_grad():
-            _, proto_sim = self.simulator(x_aux)
-            proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
-            if self.conditional:
-                x_recon = self.decoder(proto_sim_flat, y_aux)
+            if self.use_smashed_data:
+                _, proto_sim, smashed_sim = self.simulator(x_aux, return_smashed=True)
             else:
-                x_recon = self.decoder(proto_sim_flat)
+                _, proto_sim = self.simulator(x_aux)
+                smashed_sim = None
+            proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
+
+            if self.use_smashed_data and smashed_sim is not None:
+                if self.conditional:
+                    x_recon = self.decoder(proto_sim_flat, smashed_sim, y_aux)
+                else:
+                    x_recon = self.decoder(proto_sim_flat, smashed_sim)
+            else:
+                if self.conditional:
+                    x_recon = self.decoder(proto_sim_flat, y_aux)
+                else:
+                    x_recon = self.decoder(proto_sim_flat)
 
         # Discriminator sees both real and fake in [0,1]
         if self.conditional:
