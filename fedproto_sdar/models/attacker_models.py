@@ -211,3 +211,90 @@ class DecoderDiscriminator(nn.Module):
         x = self.fc(x)                                   # (batch, 1)
 
         return x
+
+
+class HybridDecoder(nn.Module):
+    """
+    Hybrid decoder for the smashed-data experiment.
+    Takes BOTH a 1D prototype (512-dim) AND 3D smashed data (64×8×8) as inputs.
+
+    Architecture:
+        1. Prototype (512,) → Linear → reshape to (proto_spatial_ch, 8, 8)
+        2. Concatenate with smashed_data (64, 8, 8) along channel dim
+           → combined: (proto_spatial_ch + 64, 8, 8)
+        3. Optional label embedding → expand to (1, 8, 8) and concatenate
+        4. ConvTranspose2d stack: → (128, 16, 16) → (64, 32, 32) → (3, 32, 32)
+    """
+
+    def __init__(self, proto_dim=512, smashed_channels=64, smashed_spatial=8,
+                 num_classes=10, img_channels=3, img_size=32,
+                 embed_dim=50, conditional=True):
+        super(HybridDecoder, self).__init__()
+        self.proto_dim = proto_dim
+        self.conditional = conditional
+        self.smashed_spatial = smashed_spatial
+
+        # Project prototype to spatial feature map
+        proto_spatial_ch = 64  # channels for prototype spatial map
+        self.proto_fc = nn.Linear(proto_dim, proto_spatial_ch * smashed_spatial * smashed_spatial)
+        self.proto_spatial_ch = proto_spatial_ch
+
+        # Total input channels = proto_spatial + smashed + (optional label)
+        in_channels = proto_spatial_ch + smashed_channels
+        if conditional:
+            self.label_embedding = nn.Embedding(num_classes, embed_dim)
+            self.label_fc = nn.Linear(embed_dim, smashed_spatial * smashed_spatial)
+            in_channels += 1  # label channel
+
+        # Decoder: (in_channels, 8, 8) → (128, 16, 16) → (64, 32, 32) → (3, 32, 32)
+        self.deconv1 = nn.ConvTranspose2d(in_channels, 128, 4, stride=2, padding=1)
+        self.bn1 = nn.BatchNorm2d(128)
+
+        self.deconv2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+
+        self.deconv3 = nn.ConvTranspose2d(64, img_channels, 3, stride=1, padding=1)
+        # Sigmoid output → [0, 1]
+
+    def forward(self, proto, smashed, labels=None):
+        """
+        Args:
+            proto: (batch, 512) — prototype vector
+            smashed: (batch, 64, 8, 8) — intermediate features from client model
+            labels: (batch,) — integer class labels (required if conditional)
+
+        Returns:
+            (batch, 3, 32, 32) — reconstructed image in [0, 1]
+        """
+        batch_size = proto.size(0)
+
+        # Flatten prototype if needed
+        if proto.dim() == 4:
+            proto = proto.view(proto.size(0), -1)
+
+        # Project prototype to spatial map
+        proto_spatial = F.relu(self.proto_fc(proto))
+        proto_spatial = proto_spatial.view(
+            batch_size, self.proto_spatial_ch,
+            self.smashed_spatial, self.smashed_spatial
+        )  # (batch, 64, 8, 8)
+
+        # Concatenate prototype spatial map with smashed data
+        x = torch.cat([proto_spatial, smashed], dim=1)  # (batch, 128, 8, 8)
+
+        # Add label channel if conditional
+        if self.conditional:
+            assert labels is not None, "Labels required for conditional decoder"
+            label_emb = self.label_embedding(labels)  # (batch, embed_dim)
+            label_map = self.label_fc(label_emb)  # (batch, 64)
+            label_map = label_map.view(
+                batch_size, 1, self.smashed_spatial, self.smashed_spatial
+            )  # (batch, 1, 8, 8)
+            x = torch.cat([x, label_map], dim=1)  # (batch, 129, 8, 8)
+
+        # Decode
+        x = F.relu(self.bn1(self.deconv1(x)))   # (batch, 128, 16, 16)
+        x = F.relu(self.bn2(self.deconv2(x)))   # (batch, 64, 32, 32)
+        x = torch.sigmoid(self.deconv3(x))      # (batch, 3, 32, 32)
+
+        return x

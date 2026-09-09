@@ -122,13 +122,15 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, return_smashed=False):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
         x = self.layer1(x)
+        smashed = x               # smashed data: (batch, 64, 8, 8) — intermediate features
+
         x = self.layer2(x)
         x = self.layer3(x)
         x1 = self.layer4(x)        # prototype: (batch, 512, 1, 1)
@@ -137,6 +139,8 @@ class ResNet(nn.Module):
         x = x.view(x.size(0), -1)  # (batch, 512)
         x = self.fc(x)             # (batch, num_classes)
 
+        if return_smashed:
+            return F.log_softmax(x, dim=1), x1, smashed
         return F.log_softmax(x, dim=1), x1
 
 

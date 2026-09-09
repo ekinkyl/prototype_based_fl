@@ -84,6 +84,9 @@ def get_args():
     parser.add_argument('--no_proto_avg', action='store_true', default=False,
                         help="ablation: send individual per-image prototypes to the "
                              "attacker instead of class-averaged ones")
+    parser.add_argument('--use_smashed_data', action='store_true', default=False,
+                        help="hybrid attack: also send intermediate layer features "
+                             "(smashed data) to the attacker for reconstruction")
 
     # ── General arguments ──
     parser.add_argument('--gpu', type=int, default=0,

@@ -33,7 +33,8 @@ class FedProtoServer:
         self.global_protos = []  # empty list = no protos yet (first round)
         self.attacker = attacker
 
-    def receive_and_aggregate(self, local_protos, round_num, raw_protos=None):
+    def receive_and_aggregate(self, local_protos, round_num, raw_protos=None,
+                              smashed_data=None):
         """
         Process prototypes from all clients.
 
@@ -45,6 +46,8 @@ class FedProtoServer:
                 Individual per-image prototypes (no-averaging ablation).
                 If provided, the attacker trains on these instead of local_protos.
                 FedProto aggregation always uses local_protos (averaged).
+            smashed_data: optional dict {client_idx: {label: [smashed1, ...]}}
+                Per-image intermediate features for hybrid attack.
 
         Returns:
             global_protos: dict {label: [proto_tensor]}
@@ -62,7 +65,7 @@ class FedProtoServer:
             # otherwise fall back to the averaged local_protos (original behavior).
             attacker_protos = raw_protos if raw_protos is not None else local_protos
             round_log = self.attacker.train_attack_round(
-                attacker_protos, round_num)
+                attacker_protos, round_num, smashed_data=smashed_data)
             attack_results['train_log'] = round_log
 
             # Perform attack inference on a subset of clients

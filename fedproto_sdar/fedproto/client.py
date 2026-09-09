@@ -49,7 +49,8 @@ class FedProtoClient:
             drop_last=True
         )
 
-    def local_train(self, args, client_idx, global_protos, model, global_round):
+    def local_train(self, args, client_idx, global_protos, model, global_round,
+                    use_smashed_data=False):
         """
         Perform one round of local FedProto training.
 
@@ -59,12 +60,14 @@ class FedProtoClient:
             global_protos: dict {label: [proto_tensor]} from server
             model: copy of the local model to train
             global_round: current global round number
+            use_smashed_data: if True, also collect intermediate features (smashed data)
 
         Returns:
             model_weights: state_dict after training
             epoch_loss: dict with 'total', '1' (CE), '2' (proto) losses
             accuracy: final batch accuracy
             agg_protos_label: dict {label: [proto_tensor, ...]} per-class protos
+            smashed_data: (only if use_smashed_data) dict {label: [smashed_tensor, ...]} per-class
         """
         model.train()
         epoch_loss = {'total': [], '1': [], '2': []}
@@ -81,13 +84,18 @@ class FedProtoClient:
         for epoch in range(self.args.train_ep):
             batch_loss = {'total': [], '1': [], '2': []}
             agg_protos_label = {}
+            smashed_data_label = {}  # for hybrid attack
 
             for batch_idx, (images, label_g) in enumerate(self.trainloader):
                 images = images.to(self.device)
                 labels = label_g.to(self.device)
 
                 model.zero_grad()
-                log_probs, protos = model(images)
+                if use_smashed_data:
+                    log_probs, protos, smashed = model(images, return_smashed=True)
+                else:
+                    log_probs, protos = model(images)
+                    smashed = None
 
                 # Loss 1: cross-entropy classification loss
                 loss1 = self.criterion(log_probs, labels)
@@ -114,6 +122,13 @@ class FedProtoClient:
                         agg_protos_label[lbl].append(protos[i, :])
                     else:
                         agg_protos_label[lbl] = [protos[i, :]]
+
+                    # Collect per-image smashed data if requested
+                    if use_smashed_data and smashed is not None:
+                        if lbl in smashed_data_label:
+                            smashed_data_label[lbl].append(smashed[i].detach().clone())
+                        else:
+                            smashed_data_label[lbl] = [smashed[i].detach().clone()]
 
                 # Compute accuracy
                 log_probs_clipped = log_probs[:, 0:args.num_classes]
@@ -143,6 +158,8 @@ class FedProtoClient:
         epoch_loss['1'] = sum(epoch_loss['1']) / len(epoch_loss['1'])
         epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
 
+        if use_smashed_data:
+            return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label, smashed_data_label
         return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
 
 

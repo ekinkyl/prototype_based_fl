@@ -60,7 +60,7 @@ def main():
     print(f"  Dataset: {args.dataset} | Model: {args.model}")
     print(f"  Users: {args.num_users} | Rounds: {args.rounds}")
     print(f"  Ways: {args.ways} | Shots: {args.shots} | ld: {args.ld}")
-    print(f"  Attack: λ1={args.lambda1} λ2={args.lambda2} "
+    print(f"  Attack: lambda1={args.lambda1} lambda2={args.lambda2} "
           f"epochs={args.attack_epochs}")
     print(f"  Conditional: {args.conditional}")
     print(f"  No Proto Avg (ablation): {args.no_proto_avg}")
@@ -138,24 +138,35 @@ def main():
         print(f'\n | Global Training Round : {round_num + 1} |')
 
         global_protos = server.get_global_protos()
+        smashed_data = {}      # individual smashed data (for hybrid attack)
 
         # ── Client local training ──
         for idx in range(args.num_users):
             client = FedProtoClient(
                 args=args, dataset=train_dataset, idxs=user_groups[idx])
 
-            w, loss, acc, protos = client.local_train(
-                args, idx, global_protos,
-                model=copy.deepcopy(local_model_list[idx]),
-                global_round=round_num)
+            if args.use_smashed_data:
+                w, loss, acc, protos, smashed = client.local_train(
+                    args, idx, global_protos,
+                    model=copy.deepcopy(local_model_list[idx]),
+                    global_round=round_num,
+                    use_smashed_data=True)
+            else:
+                w, loss, acc, protos = client.local_train(
+                    args, idx, global_protos,
+                    model=copy.deepcopy(local_model_list[idx]),
+                    global_round=round_num)
 
             # If ablation mode: keep the raw individual protos for the attacker
-            if args.no_proto_avg:
+            if args.no_proto_avg or args.use_smashed_data:
                 # Safely detach and clone PyTorch tensors (deepcopy fails on graph tensors)
                 raw_protos[idx] = {
                     lbl: [p.detach().clone() for p in p_list] 
                     for lbl, p_list in protos.items()
                 }
+            
+            if args.use_smashed_data:
+                smashed_data[idx] = smashed
 
             # Always average for FedProto FL (keeps accuracy identical)
             agg_protos = agg_func(protos)
@@ -175,7 +186,8 @@ def main():
         # FedProto aggregation always uses averaged local_protos.
         global_protos, attack_results = server.receive_and_aggregate(
             local_protos, round_num,
-            raw_protos=raw_protos if args.no_proto_avg else None)
+            raw_protos=raw_protos if (args.no_proto_avg or args.use_smashed_data) else None,
+            smashed_data=smashed_data if args.use_smashed_data else None)
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss_history.append(loss_avg)
@@ -225,7 +237,110 @@ def main():
     all_per_class_mse = {}
     all_downstream_acc = []
 
-    if args.no_proto_avg:
+    if args.use_smashed_data:
+        # ── HYBRID EXPERIMENT (Exp 3 & 4): Smashed Data + Prototypes ──
+        print(f"\n  [HYBRID] Evaluating with Smashed Data {'+ Individual Protos' if args.no_proto_avg else '+ Averaged Protos'}")
+        
+        all_individual_ssim = []  # Comparison A
+        all_individual_mse = []
+        
+        for idx in range(eval_clients):
+            client_smashed = smashed_data.get(idx, {})
+            client_protos = raw_protos.get(idx, {}) if args.no_proto_avg else local_protos.get(idx, {})
+            
+            if not client_smashed:
+                continue
+
+            all_recons = []
+            all_labels = []
+            all_sources = []
+            
+            # Reconstruct every single image
+            for label, s_list in client_smashed.items():
+                p_val = client_protos.get(label, [])
+                if isinstance(p_val, torch.Tensor):
+                    p_list = [p_val] * len(s_list) # Exp 3: broadcast average proto
+                else:
+                    p_list = p_val                 # Exp 4: individual protos
+                
+                # Fetch source images for Comparison A
+                indices = [i for i, (_, l) in enumerate(train_dataset) if l == label and i in user_groups[idx]]
+                
+                for i in range(min(len(s_list), len(p_list))):
+                    smashed = s_list[i].detach()
+                    proto = p_list[i].detach() if isinstance(p_list[i], torch.Tensor) else p_list[i]
+                    
+                    recon = attacker.attack_with_smashed(smashed, proto, label)
+                    all_recons.append(recon)
+                    all_labels.append(label)
+                    
+                    if i < len(indices):
+                        source_img = train_dataset[indices[i]][0]
+                        all_sources.append(source_img)
+
+            if len(all_recons) == 0:
+                continue
+                
+            # Comparison A: Individual Reconstructions vs Source Images
+            recon_batch = torch.stack(all_recons)
+            source_batch = torch.stack(all_sources)
+            ind_metrics = evaluate_attack(source_batch, recon_batch)
+            all_individual_ssim.append(ind_metrics['ssim'])
+            all_individual_mse.append(ind_metrics['mse'])
+            
+            # Comparison B: Averaged Reconstructions vs Class Means
+            from collections import defaultdict
+            recon_by_class = defaultdict(list)
+            for i, lbl in enumerate(all_labels):
+                recon_by_class[lbl].append(recon_batch[i])
+
+            avg_recons = {}
+            for lbl, recon_list in recon_by_class.items():
+                avg_recons[lbl] = torch.stack(recon_list).mean(dim=0)
+                
+            real_class_means = compute_real_class_means(
+                train_dataset, user_groups[idx], args.num_classes, device=args.device)
+            
+            per_class_mse = compute_per_class_mse(avg_recons, real_class_means)
+            all_per_class_mse[idx] = per_class_mse
+
+            shared_labels = sorted(set(avg_recons.keys()) & set(real_class_means.keys()))
+            if len(shared_labels) > 0:
+                recon_stack = torch.stack([avg_recons[l] for l in shared_labels])
+                real_stack = torch.stack([real_class_means[l] for l in shared_labels])
+
+                metrics = evaluate_attack(real_stack, recon_stack)
+                all_mse.append(metrics['mse'])
+                all_psnr.append(metrics['psnr'])
+                all_ssim.append(metrics['ssim'])
+
+                print(f"\n  Client {idx}:")
+                print(f"    [Comparison A: Individual vs Source]: SSIM = {ind_metrics['ssim']:.4f}")
+                print(f"    [Comparison B: Avg vs Class Mean]:    SSIM = {metrics['ssim']:.4f}")
+                
+                # Save comparison figure for Comparison B
+                n_show = len(shared_labels)
+                fig, axes = plt.subplots(2, n_show, figsize=(n_show * 2.5, 5))
+                if n_show == 1:
+                    axes = axes.reshape(2, 1)
+                for i, l in enumerate(shared_labels):
+                    axes[0, i].imshow(real_stack[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                    axes[0, i].set_title(f'Class Mean c{l}')
+                    axes[0, i].axis('off')
+                    axes[1, i].imshow(recon_stack[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                    axes[1, i].set_title(f'Avg Recon c{l}')
+                    axes[1, i].axis('off')
+                plt.suptitle('Hybrid Attack: Avg Recon vs Class Mean')
+                plt.tight_layout()
+                save_fig_path = os.path.join(recon_dir, f'hybrid_comparison_client{idx}.png')
+                plt.savefig(save_fig_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                
+        print(f"\n  Hybrid Attack Summary:")
+        print(f"    Comparison A (Individual SSIM): {np.mean(all_individual_ssim):.4f}")
+        print(f"    Comparison B (Class Mean SSIM): {np.mean(all_ssim):.4f}")
+
+    elif args.no_proto_avg:
         # ── ABLATION MODE: reconstruct from individual prototypes,
         #    average reconstructions per class, compare vs class mean images
         #    (same comparison target as the original experiment) ──

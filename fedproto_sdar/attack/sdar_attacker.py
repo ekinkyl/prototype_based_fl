@@ -28,7 +28,7 @@ if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
 from models.client_models import get_model
-from models.attacker_models import Decoder, SimulatorDiscriminator, DecoderDiscriminator
+from models.attacker_models import Decoder, HybridDecoder, SimulatorDiscriminator, DecoderDiscriminator
 from data.data_loader import DatasetSplit
 
 
@@ -92,6 +92,71 @@ class PrototypeBank:
         return len(self.protos)
 
 
+class SmashedDataBank:
+    """
+    Stores per-image (smashed_data, proto, label) triples for hybrid attack training.
+    The decoder needs matched (smashed, proto) pairs to learn reconstruction.
+    """
+
+    def __init__(self, max_size=20000):
+        self.max_size = max_size
+        self.items = []  # list of (smashed_tensor, proto_tensor, label_int)
+
+    def add_batch(self, smashed_dict, proto_dict):
+        """
+        Add matched smashed data and prototypes from clients.
+
+        Args:
+            smashed_dict: dict {client_idx: {label: [smashed1, smashed2, ...]}}
+            proto_dict: dict {client_idx: {label: [proto1, proto2, ...] or proto_tensor}}
+        """
+        for client_idx in smashed_dict:
+            for label in smashed_dict[client_idx]:
+                smashed_list = smashed_dict[client_idx][label]
+                proto_entry = proto_dict.get(client_idx, {}).get(label, [])
+                # Handle both list and single tensor
+                if isinstance(proto_entry, torch.Tensor):
+                    proto_list = [proto_entry] * len(smashed_list)
+                elif isinstance(proto_entry, list):
+                    proto_list = proto_entry
+                else:
+                    continue
+                # Match smashed and proto by index
+                for i in range(min(len(smashed_list), len(proto_list))):
+                    self.items.append((
+                        smashed_list[i].detach().cpu(),
+                        proto_list[i].detach().cpu() if isinstance(proto_list[i], torch.Tensor) else proto_list[i],
+                        label
+                    ))
+        # Evict oldest if exceeding max size
+        if len(self.items) > self.max_size:
+            self.items = self.items[-self.max_size:]
+
+    def sample(self, batch_size, device='cpu'):
+        """
+        Sample a batch of matched (smashed, proto, label) triples.
+
+        Returns:
+            smashed: (batch, C, H, W) tensor
+            protos: (batch, proto_dim) tensor
+            labels: (batch,) tensor
+        """
+        if len(self.items) == 0:
+            return None, None, None
+
+        n = min(batch_size, len(self.items))
+        indices = np.random.choice(len(self.items), n, replace=(n > len(self.items)))
+
+        smashed = torch.stack([self.items[i][0] for i in indices]).to(device)
+        protos = torch.stack([self.items[i][1] for i in indices]).to(device)
+        labels = torch.tensor([self.items[i][2] for i in indices],
+                              dtype=torch.long).to(device)
+        return smashed, protos, labels
+
+    def __len__(self):
+        return len(self.items)
+
+
 class SDARAttackerFedProto:
     """
     SDAR attack engine adapted for FedProto.
@@ -119,6 +184,7 @@ class SDARAttackerFedProto:
         self.conditional = args.conditional
         self.lambda1 = args.lambda1
         self.lambda2 = args.lambda2
+        self.use_smashed_data = getattr(args, 'use_smashed_data', False)
 
         # Store normalization params for denormalization
         norm = self.NORM_PARAMS.get(args.dataset, self.NORM_PARAMS['cifar10'])
@@ -135,6 +201,10 @@ class SDARAttackerFedProto:
 
         # ── Proto bank for discriminator training ──
         self.proto_bank = PrototypeBank(max_size=10000)
+
+        # ── Smashed data bank for hybrid attack ──
+        if self.use_smashed_data:
+            self.smashed_bank = SmashedDataBank(max_size=20000)
 
         # ── Initialize attack models ──
         self._init_models(args)
@@ -161,14 +231,25 @@ class SDARAttackerFedProto:
             sim_model_name, num_classes=args.num_classes, pretrained=False)
         self.simulator.to(self.device)
 
-        # Decoder: prototype → image
-        self.decoder = Decoder(
-            proto_dim=self.proto_dim,
-            num_classes=args.num_classes,
-            img_channels=3 if args.dataset in ['cifar10', 'cifar100'] else 1,
-            img_size=32,
-            conditional=self.conditional
-        ).to(self.device)
+        # Decoder: prototype → image (or hybrid: prototype + smashed → image)
+        if self.use_smashed_data:
+            self.decoder = HybridDecoder(
+                proto_dim=self.proto_dim,
+                smashed_channels=64,  # layer1 output channels
+                smashed_spatial=8,    # layer1 output spatial size for CIFAR-10
+                num_classes=args.num_classes,
+                img_channels=3 if args.dataset in ['cifar10', 'cifar100'] else 1,
+                img_size=32,
+                conditional=self.conditional
+            ).to(self.device)
+        else:
+            self.decoder = Decoder(
+                proto_dim=self.proto_dim,
+                num_classes=args.num_classes,
+                img_channels=3 if args.dataset in ['cifar10', 'cifar100'] else 1,
+                img_size=32,
+                conditional=self.conditional
+            ).to(self.device)
 
         # Simulator discriminator (optional)
         if self.lambda1 > 0:
@@ -210,7 +291,7 @@ class SDARAttackerFedProto:
         self.criterion_bce = nn.BCEWithLogitsLoss()
         self.criterion_mse = nn.MSELoss()
 
-    def train_attack_round(self, local_protos, round_num):
+    def train_attack_round(self, local_protos, round_num, smashed_data=None):
         """
         Run one round of SDAR attack training.
 
@@ -220,12 +301,18 @@ class SDARAttackerFedProto:
             local_protos: dict {client_idx: {label: proto_tensor}}
                 Per-class aggregated prototypes from each client
             round_num: current FedProto round number
+            smashed_data: optional dict {client_idx: {label: [smashed1, ...]}}
+                Per-image intermediate features for hybrid attack
 
         Returns:
             round_log: dict with average losses for this round
         """
         # Add received prototypes to the proto bank
         self.proto_bank.add_batch(local_protos)
+
+        # Add smashed data to the smashed bank if provided
+        if self.use_smashed_data and smashed_data is not None:
+            self.smashed_bank.add_batch(smashed_data, local_protos)
 
         if len(self.proto_bank) < self.args.attack_batch_size // 2:
             print(f"  [SDAR] Proto bank too small ({len(self.proto_bank)}), "
@@ -283,9 +370,10 @@ class SDARAttackerFedProto:
         # Log summary
         sim_cls = round_log.get('sim_cls', 0)
         dec_mse = round_log.get('dec_mse', 0)
+        extra = f", smashed_bank_size={len(self.smashed_bank)}" if self.use_smashed_data else ""
         print(f"  [SDAR Round {round_num}] sim_cls={sim_cls:.4f}, "
               f"dec_mse={dec_mse:.4f}, "
-              f"proto_bank_size={len(self.proto_bank)}")
+              f"proto_bank_size={len(self.proto_bank)}{extra}")
 
         return round_log
 
@@ -367,19 +455,30 @@ class SDARAttackerFedProto:
         return torch.clamp(x * std + mean, 0.0, 1.0)
 
     def _train_decoder_step(self, x_aux, y_aux):
-        """Train decoder: reconstruct aux images from simulator protos."""
+        """Train decoder: reconstruct aux images from simulator protos.
+        For hybrid mode, uses smashed data from the simulator as additional input."""
         self.dec_optimizer.zero_grad()
 
         # Simulator processes normalized images (correct — matches client model)
         with torch.no_grad():
-            _, proto_sim = self.simulator(x_aux)
+            if self.use_smashed_data:
+                _, proto_sim, smashed_sim = self.simulator(x_aux, return_smashed=True)
+            else:
+                _, proto_sim = self.simulator(x_aux)
+                smashed_sim = None
         proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
 
         # Decode
-        if self.conditional:
-            x_recon = self.decoder(proto_sim_flat, y_aux)
+        if self.use_smashed_data and smashed_sim is not None:
+            if self.conditional:
+                x_recon = self.decoder(proto_sim_flat, smashed_sim, y_aux)
+            else:
+                x_recon = self.decoder(proto_sim_flat, smashed_sim)
         else:
-            x_recon = self.decoder(proto_sim_flat)
+            if self.conditional:
+                x_recon = self.decoder(proto_sim_flat, y_aux)
+            else:
+                x_recon = self.decoder(proto_sim_flat)
 
         # Denormalize x_aux so both sides are in [0, 1]
         # (decoder outputs sigmoid → [0,1], so target must also be [0,1])
@@ -482,6 +581,40 @@ class SDARAttackerFedProto:
 
         self.decoder.train()
         return reconstructions
+
+    def attack_with_smashed(self, smashed_data, proto, label):
+        """
+        Reconstruct a single image using both prototype and smashed data.
+        Used for hybrid attack evaluation.
+
+        Args:
+            smashed_data: (1, 64, 8, 8) or (64, 8, 8) — intermediate features
+            proto: (1, 512) or (512,) — prototype vector
+            label: int — class label
+
+        Returns:
+            (3, 32, 32) tensor — reconstructed image in [0, 1]
+        """
+        self.decoder.eval()
+        with torch.no_grad():
+            if smashed_data.dim() == 3:
+                smashed_data = smashed_data.unsqueeze(0)
+            if proto.dim() == 1:
+                proto = proto.unsqueeze(0)
+            if proto.dim() == 4:
+                proto = proto.view(proto.size(0), -1)
+
+            smashed_data = smashed_data.to(self.device)
+            proto = proto.to(self.device)
+            label_tensor = torch.tensor([label], dtype=torch.long, device=self.device)
+
+            if self.conditional:
+                x_recon = self.decoder(proto, smashed_data, label_tensor)
+            else:
+                x_recon = self.decoder(proto, smashed_data)
+
+        self.decoder.train()
+        return x_recon.squeeze(0).cpu()
 
     def attack_batch(self, protos_batch, labels_batch):
         """
