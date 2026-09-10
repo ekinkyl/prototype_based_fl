@@ -623,10 +623,11 @@ class SDARAttackerFedProto:
         with torch.no_grad():
             if smashed_data.dim() == 3:
                 smashed_data = smashed_data.unsqueeze(0)
-            if proto.dim() == 1:
-                proto = proto.unsqueeze(0)
-            if proto.dim() == 4:
-                proto = proto.view(proto.size(0), -1)
+
+            # Flatten proto to (1, proto_dim) regardless of input shape
+            # Could be (512,), (512, 1, 1), (1, 512), (1, 512, 1, 1), etc.
+            proto = proto.flatten()           # → (512,)
+            proto = proto.unsqueeze(0)        # → (1, 512)
 
             smashed_data = smashed_data.to(self.device)
             proto = proto.to(self.device)
