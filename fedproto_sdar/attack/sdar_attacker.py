@@ -233,10 +233,12 @@ class SDARAttackerFedProto:
 
         # Decoder: prototype → image (or hybrid: prototype + smashed → image)
         if self.use_smashed_data:
+            self.smashed_channels = 64   # layer1 output channels
+            self.smashed_spatial = 8     # layer1 output spatial size for CIFAR-10
             self.decoder = HybridDecoder(
                 proto_dim=self.proto_dim,
-                smashed_channels=64,  # layer1 output channels
-                smashed_spatial=8,    # layer1 output spatial size for CIFAR-10
+                smashed_channels=self.smashed_channels,
+                smashed_spatial=self.smashed_spatial,
                 num_classes=args.num_classes,
                 img_channels=3 if args.dataset in ['cifar10', 'cifar100'] else 1,
                 img_size=32,
@@ -583,7 +585,18 @@ class SDARAttackerFedProto:
 
                 label_tensor = torch.tensor([label], dtype=torch.long,
                                              device=self.device)
-                if self.conditional:
+
+                if self.use_smashed_data:
+                    # HybridDecoder needs smashed data — use zeros as placeholder
+                    # (real hybrid eval uses attack_with_smashed() instead)
+                    dummy_smashed = torch.zeros(
+                        1, self.smashed_channels, self.smashed_spatial,
+                        self.smashed_spatial, device=self.device)
+                    if self.conditional:
+                        x_recon = self.decoder(proto, dummy_smashed, label_tensor)
+                    else:
+                        x_recon = self.decoder(proto, dummy_smashed)
+                elif self.conditional:
                     x_recon = self.decoder(proto, label_tensor)
                 else:
                     x_recon = self.decoder(proto)
