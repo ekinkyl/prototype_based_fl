@@ -314,9 +314,20 @@ def main():
                 all_psnr.append(metrics['psnr'])
                 all_ssim.append(metrics['ssim'])
 
-                print(f"\n  Client {idx}:")
-                print(f"    [Comparison A: Individual vs Source]: SSIM = {ind_metrics['ssim']:.4f}")
-                print(f"    [Comparison B: Avg vs Class Mean]:    SSIM = {metrics['ssim']:.4f}")
+                print(f"\n  Client {idx} ({len(shared_labels)} classes, "
+                      f"{len(all_recons)} individual images):")
+                print(f"    [Comparison A: Individual Recon vs Source Image]:")
+                print(f"      MSE  = {ind_metrics['mse']:.6f}")
+                print(f"      PSNR = {ind_metrics['psnr']:.2f} dB")
+                print(f"      SSIM = {ind_metrics['ssim']:.4f}")
+                print(f"    [Comparison B: Avg Recon vs Class Mean Image]:")
+                print(f"      MSE  = {metrics['mse']:.6f}")
+                print(f"      PSNR = {metrics['psnr']:.2f} dB")
+                print(f"      SSIM = {metrics['ssim']:.4f}")
+                for l in shared_labels:
+                    n_recons = len(recon_by_class[l])
+                    print(f"      Class {l}: MSE = {per_class_mse.get(l, 'N/A'):.6f} "
+                          f"(avg of {n_recons} reconstructions)")
                 
                 # Save comparison figure for Comparison B
                 n_show = len(shared_labels)
@@ -336,9 +347,16 @@ def main():
                 plt.savefig(save_fig_path, dpi=150, bbox_inches='tight')
                 plt.close()
                 
-        print(f"\n  Hybrid Attack Summary:")
-        print(f"    Comparison A (Individual SSIM): {np.mean(all_individual_ssim):.4f}")
-        print(f"    Comparison B (Class Mean SSIM): {np.mean(all_ssim):.4f}")
+        print(f"\n  Hybrid Attack Summary (avg over {eval_clients} clients):")
+        print(f"    [Comparison A: Individual Recon vs Source Image]:")
+        if all_individual_mse:
+            print(f"      MSE  : {np.mean(all_individual_mse):.6f} +/- {np.std(all_individual_mse):.6f}")
+            print(f"      SSIM : {np.mean(all_individual_ssim):.4f} +/- {np.std(all_individual_ssim):.4f}")
+        print(f"    [Comparison B: Avg Recon vs Class Mean Image]:")
+        if all_mse:
+            print(f"      MSE  : {np.mean(all_mse):.6f} +/- {np.std(all_mse):.6f}")
+            print(f"      PSNR : {np.mean(all_psnr):.2f} +/- {np.std(all_psnr):.2f} dB")
+            print(f"      SSIM : {np.mean(all_ssim):.4f} +/- {np.std(all_ssim):.4f}")
 
     elif args.no_proto_avg:
         # ── ABLATION MODE: reconstruct from individual prototypes,

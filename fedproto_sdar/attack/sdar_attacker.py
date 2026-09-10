@@ -255,8 +255,15 @@ class SDARAttackerFedProto:
 
         # Simulator discriminator (optional)
         if self.lambda1 > 0:
+            if self.use_smashed_data:
+                # If hybrid attack, align BOTH smashed data (layer 1) and prototypes (layer 4)
+                e_dis_dim = (self.smashed_channels * self.smashed_spatial * self.smashed_spatial) + self.proto_dim
+            else:
+                # Otherwise align prototypes (layer 4) like FedProto
+                e_dis_dim = self.proto_dim
+                
             self.e_dis = SimulatorDiscriminator(
-                proto_dim=self.proto_dim,
+                proto_dim=e_dis_dim,
                 num_classes=args.num_classes,
                 conditional=self.conditional
             ).to(self.device)
@@ -384,7 +391,10 @@ class SDARAttackerFedProto:
         self.sim_optimizer.zero_grad()
 
         # Forward through simulator
-        logits_sim, proto_sim = self.simulator(x_aux)
+        if self.use_smashed_data:
+            logits_sim, proto_sim, smashed_sim = self.simulator(x_aux, return_smashed=True)
+        else:
+            logits_sim, proto_sim = self.simulator(x_aux)
 
         # Classification loss (simulator's own classifier provides signal)
         loss_cls = self.criterion_cls(logits_sim, y_aux)
@@ -392,12 +402,19 @@ class SDARAttackerFedProto:
         # GAN loss (fool the simulator discriminator)
         loss_gen = torch.tensor(0.0, device=self.device)
         if self.e_dis is not None and self.lambda1 > 0:
-            # Flatten proto for discriminator
-            proto_flat = proto_sim.view(proto_sim.size(0), -1)
-            if self.conditional:
-                e_dis_fake = self.e_dis(proto_flat, y_aux)
+            if self.use_smashed_data:
+                # Flatten and concatenate smashed data + prototype for joint discriminator
+                smashed_flat = smashed_sim.view(smashed_sim.size(0), -1)
+                proto_flat = proto_sim.view(proto_sim.size(0), -1)
+                align_target_flat = torch.cat([smashed_flat, proto_flat], dim=1)
             else:
-                e_dis_fake = self.e_dis(proto_flat)
+                # Flatten proto for discriminator
+                align_target_flat = proto_sim.view(proto_sim.size(0), -1)
+                
+            if self.conditional:
+                e_dis_fake = self.e_dis(align_target_flat, y_aux)
+            else:
+                e_dis_fake = self.e_dis(align_target_flat)
             # Generator wants discriminator to think these are real
             real_labels = torch.ones_like(e_dis_fake)
             loss_gen = self.criterion_bce(e_dis_fake, real_labels)
@@ -413,29 +430,48 @@ class SDARAttackerFedProto:
         }
 
     def _train_e_dis_step(self, x_aux, y_aux):
-        """Train simulator discriminator: distinguish real vs fake protos."""
+        """Train simulator discriminator: distinguish real vs fake representations."""
         self.e_dis_optimizer.zero_grad()
 
-        # Real prototypes from proto bank
-        proto_real, labels_real = self.proto_bank.sample(
-            x_aux.size(0), device=self.device)
-        if proto_real is None:
-            return 0.0
-
-        proto_real_flat = proto_real.view(proto_real.size(0), -1)
-
-        # Fake prototypes from simulator
-        with torch.no_grad():
-            _, proto_sim = self.simulator(x_aux)
-        proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
+        if self.use_smashed_data:
+            # Real smashed data + prototypes from smashed bank
+            real_smashed, real_protos, labels_real = self.smashed_bank.sample(
+                x_aux.size(0), device=self.device)
+            if real_smashed is None:
+                return 0.0
+            
+            # Flatten and concatenate
+            real_smashed_flat = real_smashed.view(real_smashed.size(0), -1)
+            real_protos_flat = real_protos.view(real_protos.size(0), -1)
+            real_data_flat = torch.cat([real_smashed_flat, real_protos_flat], dim=1)
+            
+            # Fake representations from simulator
+            with torch.no_grad():
+                _, fake_protos, fake_smashed = self.simulator(x_aux, return_smashed=True)
+            fake_smashed_flat = fake_smashed.view(fake_smashed.size(0), -1)
+            fake_protos_flat = fake_protos.view(fake_protos.size(0), -1)
+            fake_data_flat = torch.cat([fake_smashed_flat, fake_protos_flat], dim=1)
+            
+        else:
+            # Real prototypes from proto bank
+            real_data, labels_real = self.proto_bank.sample(
+                x_aux.size(0), device=self.device)
+            if real_data is None:
+                return 0.0
+            real_data_flat = real_data.view(real_data.size(0), -1)
+            
+            # Fake prototypes from simulator
+            with torch.no_grad():
+                _, fake_data = self.simulator(x_aux)
+            fake_data_flat = fake_data.view(fake_data.size(0), -1)
 
         # Discriminator predictions
         if self.conditional:
-            d_real = self.e_dis(proto_real_flat, labels_real)
-            d_fake = self.e_dis(proto_sim_flat, y_aux)
+            d_real = self.e_dis(real_data_flat, labels_real)
+            d_fake = self.e_dis(fake_data_flat, y_aux)
         else:
-            d_real = self.e_dis(proto_real_flat)
-            d_fake = self.e_dis(proto_sim_flat)
+            d_real = self.e_dis(real_data_flat)
+            d_fake = self.e_dis(fake_data_flat)
 
         # Loss: real → 1, fake → 0
         loss_real = self.criterion_bce(d_real, torch.ones_like(d_real))
