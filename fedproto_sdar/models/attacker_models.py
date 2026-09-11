@@ -147,6 +147,83 @@ class SimulatorDiscriminator(nn.Module):
         return self.net(x)
 
 
+class ConvSimulatorDiscriminator(nn.Module):
+    """
+    Conv-based discriminator for spatial smashed data.
+    Matches the original SDAR's make_simulator_discriminator architecture.
+
+    In the original SDAR Split Learning paper, the simulator discriminator
+    operates on the spatial intermediate features (e.g., 16×32×32 or 64×8×8)
+    using convolutional layers. This is critical for properly aligning the
+    spatial distribution of the simulator's smashed data with the client's
+    real smashed data.
+
+    Input:  smashed data (batch, in_channels, H, W) + optional label embedding
+    Output: real/fake logit (batch, 1)
+    """
+
+    def __init__(self, in_channels=64, spatial_size=8, num_classes=10,
+                 embed_dim=50, conditional=True):
+        super(ConvSimulatorDiscriminator, self).__init__()
+        self.conditional = conditional
+        self.spatial_size = spatial_size
+
+        if conditional:
+            self.label_embedding = nn.Embedding(num_classes, embed_dim)
+            self.label_fc = nn.Linear(embed_dim, spatial_size * spatial_size)
+            conv_in_channels = in_channels + 1  # smashed + label channel
+        else:
+            conv_in_channels = in_channels
+
+        # Convolutional layers (ported from SDAR's make_simulator_discriminator)
+        # For 8×8 input: 8→4→2→1
+        self.conv1 = nn.Conv2d(conv_in_channels, 128, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(128, 256, 3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm2d(256)
+        self.conv3 = nn.Conv2d(256, 256, 3, stride=2, padding=1)
+        self.bn3 = nn.BatchNorm2d(256)
+        self.conv4 = nn.Conv2d(256, 256, 3, stride=2, padding=1)
+        self.bn4 = nn.BatchNorm2d(256)
+
+        # Calculate flattened size after convolutions
+        # 8→8→4→2→1 for spatial_size=8
+        final_spatial = spatial_size // 8 if spatial_size >= 8 else 1
+        if final_spatial < 1:
+            final_spatial = 1
+
+        self.fc = nn.Linear(256 * final_spatial * final_spatial, 1)
+        self.dropout = nn.Dropout(0.4)
+
+    def forward(self, smashed, labels=None):
+        """
+        Args:
+            smashed: (batch, C, H, W) — spatial smashed data (e.g., 64×8×8)
+            labels: (batch,) integer labels
+
+        Returns:
+            (batch, 1) — real/fake logits
+        """
+        if self.conditional:
+            assert labels is not None
+            label_emb = self.label_embedding(labels)     # (batch, embed_dim)
+            label_map = self.label_fc(label_emb)         # (batch, H*W)
+            label_map = label_map.view(-1, 1, self.spatial_size, self.spatial_size)
+            x = torch.cat([smashed, label_map], dim=1)   # (batch, C+1, H, W)
+        else:
+            x = smashed
+
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.bn2(self.conv2(x)), 0.2)
+        x = F.leaky_relu(self.bn3(self.conv3(x)), 0.2)
+        x = F.leaky_relu(self.bn4(self.conv4(x)), 0.2)
+
+        x = x.view(x.size(0), -1)
+        x = self.dropout(x)
+        x = self.fc(x)
+
+        return x
+
+
 class DecoderDiscriminator(nn.Module):
     """
     Conv-based discriminator for images.

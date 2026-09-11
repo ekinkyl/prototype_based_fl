@@ -28,7 +28,7 @@ if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
 from models.client_models import get_model
-from models.attacker_models import Decoder, HybridDecoder, SimulatorDiscriminator, DecoderDiscriminator
+from models.attacker_models import Decoder, HybridDecoder, SimulatorDiscriminator, ConvSimulatorDiscriminator, DecoderDiscriminator
 from data.data_loader import DatasetSplit
 
 
@@ -256,17 +256,21 @@ class SDARAttackerFedProto:
         # Simulator discriminator (optional)
         if self.lambda1 > 0:
             if self.use_smashed_data:
-                # If hybrid attack, align BOTH smashed data (layer 1) and prototypes (layer 4)
-                e_dis_dim = (self.smashed_channels * self.smashed_spatial * self.smashed_spatial) + self.proto_dim
+                # Use convolutional discriminator for spatial smashed data
+                # (matches original SDAR architecture)
+                self.e_dis = ConvSimulatorDiscriminator(
+                    in_channels=self.smashed_channels,
+                    spatial_size=self.smashed_spatial,
+                    num_classes=args.num_classes,
+                    conditional=self.conditional
+                ).to(self.device)
             else:
-                # Otherwise align prototypes (layer 4) like FedProto
-                e_dis_dim = self.proto_dim
-                
-            self.e_dis = SimulatorDiscriminator(
-                proto_dim=e_dis_dim,
-                num_classes=args.num_classes,
-                conditional=self.conditional
-            ).to(self.device)
+                # MLP discriminator for 1D prototypes
+                self.e_dis = SimulatorDiscriminator(
+                    proto_dim=self.proto_dim,
+                    num_classes=args.num_classes,
+                    conditional=self.conditional
+                ).to(self.device)
         else:
             self.e_dis = None
 
@@ -403,18 +407,18 @@ class SDARAttackerFedProto:
         loss_gen = torch.tensor(0.0, device=self.device)
         if self.e_dis is not None and self.lambda1 > 0:
             if self.use_smashed_data:
-                # Flatten and concatenate smashed data + prototype for joint discriminator
-                smashed_flat = smashed_sim.view(smashed_sim.size(0), -1)
+                # Pass spatial smashed data to conv discriminator (matches original SDAR)
+                if self.conditional:
+                    e_dis_fake = self.e_dis(smashed_sim, y_aux)
+                else:
+                    e_dis_fake = self.e_dis(smashed_sim)
+            else:
+                # Flatten proto for MLP discriminator
                 proto_flat = proto_sim.view(proto_sim.size(0), -1)
-                align_target_flat = torch.cat([smashed_flat, proto_flat], dim=1)
-            else:
-                # Flatten proto for discriminator
-                align_target_flat = proto_sim.view(proto_sim.size(0), -1)
-                
-            if self.conditional:
-                e_dis_fake = self.e_dis(align_target_flat, y_aux)
-            else:
-                e_dis_fake = self.e_dis(align_target_flat)
+                if self.conditional:
+                    e_dis_fake = self.e_dis(proto_flat, y_aux)
+                else:
+                    e_dis_fake = self.e_dis(proto_flat)
             # Generator wants discriminator to think these are real
             real_labels = torch.ones_like(e_dis_fake)
             loss_gen = self.criterion_bce(e_dis_fake, real_labels)
@@ -430,27 +434,27 @@ class SDARAttackerFedProto:
         }
 
     def _train_e_dis_step(self, x_aux, y_aux):
-        """Train simulator discriminator: distinguish real vs fake representations."""
+        """Train simulator discriminator: distinguish real vs fake smashed data (or protos)."""
         self.e_dis_optimizer.zero_grad()
 
         if self.use_smashed_data:
-            # Real smashed data + prototypes from smashed bank
-            real_smashed, real_protos, labels_real = self.smashed_bank.sample(
+            # Real smashed data from smashed bank (spatial tensors for conv discriminator)
+            real_smashed, _, labels_real = self.smashed_bank.sample(
                 x_aux.size(0), device=self.device)
             if real_smashed is None:
                 return 0.0
             
-            # Flatten and concatenate
-            real_smashed_flat = real_smashed.view(real_smashed.size(0), -1)
-            real_protos_flat = real_protos.view(real_protos.size(0), -1)
-            real_data_flat = torch.cat([real_smashed_flat, real_protos_flat], dim=1)
-            
-            # Fake representations from simulator
+            # Fake smashed data from simulator
             with torch.no_grad():
-                _, fake_protos, fake_smashed = self.simulator(x_aux, return_smashed=True)
-            fake_smashed_flat = fake_smashed.view(fake_smashed.size(0), -1)
-            fake_protos_flat = fake_protos.view(fake_protos.size(0), -1)
-            fake_data_flat = torch.cat([fake_smashed_flat, fake_protos_flat], dim=1)
+                _, _, fake_smashed = self.simulator(x_aux, return_smashed=True)
+
+            # Conv discriminator predictions on spatial tensors
+            if self.conditional:
+                d_real = self.e_dis(real_smashed, labels_real)
+                d_fake = self.e_dis(fake_smashed, y_aux)
+            else:
+                d_real = self.e_dis(real_smashed)
+                d_fake = self.e_dis(fake_smashed)
             
         else:
             # Real prototypes from proto bank
@@ -465,13 +469,13 @@ class SDARAttackerFedProto:
                 _, fake_data = self.simulator(x_aux)
             fake_data_flat = fake_data.view(fake_data.size(0), -1)
 
-        # Discriminator predictions
-        if self.conditional:
-            d_real = self.e_dis(real_data_flat, labels_real)
-            d_fake = self.e_dis(fake_data_flat, y_aux)
-        else:
-            d_real = self.e_dis(real_data_flat)
-            d_fake = self.e_dis(fake_data_flat)
+            # MLP discriminator predictions on flat vectors
+            if self.conditional:
+                d_real = self.e_dis(real_data_flat, labels_real)
+                d_fake = self.e_dis(fake_data_flat, y_aux)
+            else:
+                d_real = self.e_dis(real_data_flat)
+                d_fake = self.e_dis(fake_data_flat)
 
         # Loss: real → 1, fake → 0
         loss_real = self.criterion_bce(d_real, torch.ones_like(d_real))
@@ -506,34 +510,59 @@ class SDARAttackerFedProto:
                 smashed_sim = None
         proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
 
-        # Decode
+        # Decode from SIMULATOR data (for MSE loss)
         if self.use_smashed_data and smashed_sim is not None:
             if self.conditional:
-                x_recon = self.decoder(proto_sim_flat, smashed_sim, y_aux)
+                x_recon_sim = self.decoder(proto_sim_flat, smashed_sim, y_aux)
             else:
-                x_recon = self.decoder(proto_sim_flat, smashed_sim)
+                x_recon_sim = self.decoder(proto_sim_flat, smashed_sim)
         else:
             if self.conditional:
-                x_recon = self.decoder(proto_sim_flat, y_aux)
+                x_recon_sim = self.decoder(proto_sim_flat, y_aux)
             else:
-                x_recon = self.decoder(proto_sim_flat)
+                x_recon_sim = self.decoder(proto_sim_flat)
 
         # Denormalize x_aux so both sides are in [0, 1]
-        # (decoder outputs sigmoid → [0,1], so target must also be [0,1])
         x_aux_denorm = self._denormalize(x_aux)
 
         # MSE reconstruction loss (both in [0, 1])
-        loss_mse = self.criterion_mse(x_recon, x_aux_denorm)
+        loss_mse = self.criterion_mse(x_recon_sim, x_aux_denorm)
 
-        # GAN loss (fool decoder discriminator)
+        # GAN loss (fool decoder discriminator) using CLIENT representations
         loss_gen = torch.tensor(0.0, device=self.device)
         if self.d_dis is not None and self.lambda2 > 0:
-            if self.conditional:
-                d_dis_fake = self.d_dis(x_recon, y_aux)
+            # 1. Sample CLIENT representations from bank
+            if self.use_smashed_data:
+                client_smashed, client_protos, client_labels = self.smashed_bank.sample(
+                    x_aux.size(0), device=self.device)
             else:
-                d_dis_fake = self.d_dis(x_recon)
-            real_labels = torch.ones_like(d_dis_fake)
-            loss_gen = self.criterion_bce(d_dis_fake, real_labels)
+                client_protos, client_labels = self.proto_bank.sample(
+                    x_aux.size(0), device=self.device)
+                client_smashed = None
+
+            if client_protos is not None:
+                client_protos_flat = client_protos.view(client_protos.size(0), -1)
+                
+                # 2. Decode CLIENT representations
+                if self.use_smashed_data and client_smashed is not None:
+                    if self.conditional:
+                        x_recon_client = self.decoder(client_protos_flat, client_smashed, client_labels)
+                    else:
+                        x_recon_client = self.decoder(client_protos_flat, client_smashed)
+                else:
+                    if self.conditional:
+                        x_recon_client = self.decoder(client_protos_flat, client_labels)
+                    else:
+                        x_recon_client = self.decoder(client_protos_flat)
+
+                # 3. Compute GAN loss
+                if self.conditional:
+                    d_dis_fake = self.d_dis(x_recon_client, client_labels)
+                else:
+                    d_dis_fake = self.d_dis(x_recon_client)
+                
+                real_labels = torch.ones_like(d_dis_fake)
+                loss_gen = self.criterion_bce(d_dis_fake, real_labels)
 
         loss_total = loss_mse + self.lambda2 * loss_gen
         loss_total.backward()
@@ -546,39 +575,45 @@ class SDARAttackerFedProto:
         }
 
     def _train_d_dis_step(self, x_aux, y_aux):
-        """Train decoder discriminator: distinguish real vs decoded images."""
+        """Train decoder discriminator: distinguish real aux images vs decoded CLIENT representations."""
         self.d_dis_optimizer.zero_grad()
 
-        # Denormalize real images to [0,1] (same space as decoder output)
+        # Denormalize real images to [0,1]
         x_aux_denorm = self._denormalize(x_aux)
 
-        # Fake images = decoder output (already [0,1])
+        # Fake images = decoder output from CLIENT representations
         with torch.no_grad():
             if self.use_smashed_data:
-                _, proto_sim, smashed_sim = self.simulator(x_aux, return_smashed=True)
+                client_smashed, client_protos, client_labels = self.smashed_bank.sample(
+                    x_aux.size(0), device=self.device)
             else:
-                _, proto_sim = self.simulator(x_aux)
-                smashed_sim = None
-            proto_sim_flat = proto_sim.view(proto_sim.size(0), -1)
+                client_protos, client_labels = self.proto_bank.sample(
+                    x_aux.size(0), device=self.device)
+                client_smashed = None
 
-            if self.use_smashed_data and smashed_sim is not None:
+            if client_protos is None:
+                return 0.0
+
+            client_protos_flat = client_protos.view(client_protos.size(0), -1)
+
+            if self.use_smashed_data and client_smashed is not None:
                 if self.conditional:
-                    x_recon = self.decoder(proto_sim_flat, smashed_sim, y_aux)
+                    x_recon_client = self.decoder(client_protos_flat, client_smashed, client_labels)
                 else:
-                    x_recon = self.decoder(proto_sim_flat, smashed_sim)
+                    x_recon_client = self.decoder(client_protos_flat, client_smashed)
             else:
                 if self.conditional:
-                    x_recon = self.decoder(proto_sim_flat, y_aux)
+                    x_recon_client = self.decoder(client_protos_flat, client_labels)
                 else:
-                    x_recon = self.decoder(proto_sim_flat)
+                    x_recon_client = self.decoder(client_protos_flat)
 
         # Discriminator sees both real and fake in [0,1]
         if self.conditional:
             d_real = self.d_dis(x_aux_denorm, y_aux)
-            d_fake = self.d_dis(x_recon, y_aux)
+            d_fake = self.d_dis(x_recon_client, client_labels)
         else:
             d_real = self.d_dis(x_aux_denorm)
-            d_fake = self.d_dis(x_recon)
+            d_fake = self.d_dis(x_recon_client)
 
         loss_real = self.criterion_bce(d_real, torch.ones_like(d_real))
         loss_fake = self.criterion_bce(d_fake, torch.zeros_like(d_fake))

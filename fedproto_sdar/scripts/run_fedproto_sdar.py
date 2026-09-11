@@ -287,6 +287,24 @@ def main():
             ind_metrics = evaluate_attack(source_batch, recon_batch)
             all_individual_ssim.append(ind_metrics['ssim'])
             all_individual_mse.append(ind_metrics['mse'])
+
+            # Save comparison figure for Comparison A (Individual)
+            n_show_ind = min(10, len(recon_batch)) # Show max 10 individual images
+            fig, axes = plt.subplots(2, n_show_ind, figsize=(n_show_ind * 2.5, 5))
+            if n_show_ind == 1:
+                axes = axes.reshape(2, 1)
+            for i in range(n_show_ind):
+                axes[0, i].imshow(source_batch[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                axes[0, i].set_title(f'Source (c{all_labels[i]})')
+                axes[0, i].axis('off')
+                axes[1, i].imshow(recon_batch[i].permute(1, 2, 0).clamp(0, 1).numpy())
+                axes[1, i].set_title(f'Recon (c{all_labels[i]})')
+                axes[1, i].axis('off')
+            plt.suptitle('Hybrid Attack: Individual Recon vs Source Image')
+            plt.tight_layout()
+            save_fig_path_ind = os.path.join(recon_dir, f'hybrid_individual_client{idx}.png')
+            plt.savefig(save_fig_path_ind, dpi=150, bbox_inches='tight')
+            plt.close()
             
             # Comparison B: Averaged Reconstructions vs Class Means
             from collections import defaultdict
