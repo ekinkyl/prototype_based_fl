@@ -61,11 +61,10 @@ class FedProtoServer:
         # ── Step 2: Run SDAR attack if enabled ──
         attack_results = {}
         if self.attacker is not None:
-            # Use raw individual protos for attacker if provided,
-            # otherwise fall back to the averaged local_protos (original behavior).
-            attacker_protos = raw_protos if raw_protos is not None else local_protos
+            # Send raw_protos (and smashed_data if hybrid mode) to attacker
+            protos_to_attack = raw_protos if raw_protos is not None else local_protos
             round_log = self.attacker.train_attack_round(
-                attacker_protos, round_num, smashed_data=smashed_data)
+                protos_to_attack, round_num, smashed_data=smashed_data, global_protos=self.global_protos)
             attack_results['train_log'] = round_log
 
             # Perform attack inference on a subset of clients

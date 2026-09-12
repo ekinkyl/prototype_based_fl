@@ -304,7 +304,7 @@ class SDARAttackerFedProto:
         self.criterion_bce = nn.BCEWithLogitsLoss()
         self.criterion_mse = nn.MSELoss()
 
-    def train_attack_round(self, local_protos, round_num, smashed_data=None):
+    def train_attack_round(self, local_protos, round_num, smashed_data=None, global_protos=None):
         """
         Run one round of SDAR attack training.
 
@@ -315,6 +315,9 @@ class SDARAttackerFedProto:
                 Per-class aggregated prototypes from each client
             round_num: current FedProto round number
             smashed_data: optional dict {client_idx: {label: [smashed1, ...]}}
+                Per-image intermediate features for hybrid attack
+            global_protos: optional dict {label: [proto_tensor]}
+                Global aggregated prototypes to regularize the simulator
                 Per-image intermediate features for hybrid attack
 
         Returns:
@@ -350,7 +353,7 @@ class SDARAttackerFedProto:
                 y_aux = y_aux.to(self.device)
 
                 # ─── A. TRAIN SIMULATOR ───
-                sim_losses = self._train_simulator_step(x_aux, y_aux)
+                sim_losses = self._train_simulator_step(x_aux, y_aux, global_protos)
                 round_losses['sim_cls'].append(sim_losses['cls'])
                 round_losses['sim_gen'].append(sim_losses['gen'])
                 round_losses['sim_total'].append(sim_losses['total'])
@@ -390,8 +393,8 @@ class SDARAttackerFedProto:
 
         return round_log
 
-    def _train_simulator_step(self, x_aux, y_aux):
-        """Train simulator: classification loss + GAN loss."""
+    def _train_simulator_step(self, x_aux, y_aux, global_protos=None):
+        """Train simulator: classification loss + FedProto dist loss + GAN loss."""
         self.sim_optimizer.zero_grad()
 
         # Forward through simulator
@@ -402,6 +405,17 @@ class SDARAttackerFedProto:
 
         # Classification loss (simulator's own classifier provides signal)
         loss_cls = self.criterion_cls(logits_sim, y_aux)
+
+        # FedProto loss: distance to global prototypes
+        # This is CRITICAL for aligning the simulator's feature space with the client's feature space.
+        loss_dist = torch.tensor(0.0, device=self.device)
+        if global_protos is not None and isinstance(global_protos, dict) and len(global_protos) > 0:
+            proto_new = proto_sim.clone()
+            for i, yy in enumerate(y_aux):
+                y_c = yy.item()
+                if y_c in global_protos:
+                    proto_new[i, :] = global_protos[y_c][0].detach().to(self.device)
+            loss_dist = self.criterion_mse(proto_new, proto_sim)
 
         # GAN loss (fool the simulator discriminator)
         loss_gen = torch.tensor(0.0, device=self.device)
@@ -423,12 +437,13 @@ class SDARAttackerFedProto:
             real_labels = torch.ones_like(e_dis_fake)
             loss_gen = self.criterion_bce(e_dis_fake, real_labels)
 
-        loss_total = loss_cls + self.lambda1 * loss_gen
+        loss_total = loss_cls + loss_dist * self.args.ld + self.lambda1 * loss_gen
         loss_total.backward()
         self.sim_optimizer.step()
 
         return {
             'cls': loss_cls.item(),
+            'dist': loss_dist.item(),
             'gen': loss_gen.item(),
             'total': loss_total.item()
         }
