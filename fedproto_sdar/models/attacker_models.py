@@ -46,15 +46,18 @@ class Decoder(nn.Module):
         # Project to spatial representation
         self.fc = nn.Linear(input_dim, 256 * 4 * 4)
 
-        # Upsample: (256,4,4) → (128,8,8) → (64,16,16) → (3,32,32)
-        self.deconv1 = nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1)
+        # Upsample: (256,4,4) → (128,8,8) → (64,16,16)
+        # Convolutional layers (using Upsample + Conv2d to prevent checkerboard artifacts)
+        self.deconv1_up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.deconv1_conv = nn.Conv2d(256, 128, 3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(128)
 
-        self.deconv2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
+        self.deconv2_up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.deconv2_conv = nn.Conv2d(128, 64, 3, stride=1, padding=1)
         self.bn2 = nn.BatchNorm2d(64)
 
-        self.deconv3 = nn.ConvTranspose2d(64, img_channels, 4, stride=2,
-                                           padding=1)
+        self.deconv3_up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.deconv3_conv = nn.Conv2d(64, img_channels, 3, stride=1, padding=1)
         # No BN on final layer, use Sigmoid to output [0, 1]
 
     def forward(self, proto, labels=None):
@@ -80,9 +83,9 @@ class Decoder(nn.Module):
         x = F.relu(self.fc(x))
         x = x.view(-1, 256, 4, 4)  # (batch, 256, 4, 4)
 
-        x = F.relu(self.bn1(self.deconv1(x)))  # (batch, 128, 8, 8)
-        x = F.relu(self.bn2(self.deconv2(x)))  # (batch, 64, 16, 16)
-        x = torch.sigmoid(self.deconv3(x))     # (batch, 3, 32, 32)
+        x = F.relu(self.bn1(self.deconv1_conv(self.deconv1_up(x))))  # (batch, 128, 8, 8)
+        x = F.relu(self.bn2(self.deconv2_conv(self.deconv2_up(x))))  # (batch, 64, 16, 16)
+        x = torch.sigmoid(self.deconv3_conv(self.deconv3_up(x)))     # (batch, 3, 32, 32)
 
         return x
 
@@ -324,13 +327,17 @@ class HybridDecoder(nn.Module):
             in_channels += 1  # label channel
 
         # Decoder: (in_channels, 8, 8) → (128, 16, 16) → (64, 32, 32) → (3, 32, 32)
-        self.deconv1 = nn.ConvTranspose2d(in_channels, 128, 4, stride=2, padding=1)
+        # Using Upsample + Conv2d instead of ConvTranspose2d to prevent checkerboard artifacts
+        self.deconv1_up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.deconv1_conv = nn.Conv2d(in_channels, 128, 3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(128)
 
-        self.deconv2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
+        self.deconv2_up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.deconv2_conv = nn.Conv2d(128, 64, 3, stride=1, padding=1)
         self.bn2 = nn.BatchNorm2d(64)
 
-        self.deconv3 = nn.ConvTranspose2d(64, img_channels, 3, stride=1, padding=1)
+        # deconv3 maintains spatial dimension for HybridDecoder
+        self.deconv3_conv = nn.Conv2d(64, img_channels, 3, stride=1, padding=1)
         # Sigmoid output → [0, 1]
 
     def forward(self, proto, smashed, labels=None):
@@ -370,8 +377,8 @@ class HybridDecoder(nn.Module):
             x = torch.cat([x, label_map], dim=1)  # (batch, 129, 8, 8)
 
         # Decode
-        x = F.relu(self.bn1(self.deconv1(x)))   # (batch, 128, 16, 16)
-        x = F.relu(self.bn2(self.deconv2(x)))   # (batch, 64, 32, 32)
-        x = torch.sigmoid(self.deconv3(x))      # (batch, 3, 32, 32)
+        x = F.relu(self.bn1(self.deconv1_conv(self.deconv1_up(x))))   # (batch, 128, 16, 16)
+        x = F.relu(self.bn2(self.deconv2_conv(self.deconv2_up(x))))   # (batch, 64, 32, 32)
+        x = torch.sigmoid(self.deconv3_conv(x))      # (batch, 3, 32, 32)
 
         return x
