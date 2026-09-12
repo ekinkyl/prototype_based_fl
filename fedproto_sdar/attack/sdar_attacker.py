@@ -293,11 +293,11 @@ class SDARAttackerFedProto:
 
         if self.e_dis is not None:
             self.e_dis_optimizer = torch.optim.Adam(
-                self.e_dis.parameters(), lr=args.attack_lr * self.lambda1)
+                self.e_dis.parameters(), lr=args.attack_lr)
 
         if self.d_dis is not None:
             self.d_dis_optimizer = torch.optim.Adam(
-                self.d_dis.parameters(), lr=args.attack_lr * self.lambda2)
+                self.d_dis.parameters(), lr=args.attack_lr * 0.5)
 
         # Loss functions
         self.criterion_cls = nn.NLLLoss()
